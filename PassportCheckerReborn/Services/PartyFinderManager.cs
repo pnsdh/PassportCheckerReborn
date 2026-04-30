@@ -292,14 +292,10 @@ public sealed class PartyFinderManager : IDisposable
         try
         {
             var closeAddress = (nint)AtkUnitBase.StaticVirtualTablePointer->Close;
-            PassportCheckerReborn.Log.Information(
-                $"[PartyFinderManager] Hooking AtkUnitBase.Close at 0x{closeAddress:X16}");
             closeAddonHook = PassportCheckerReborn.GameInteropProvider.HookFromAddress<AtkUnitBase.Delegates.Close>(
                 closeAddress,
                 CloseAddonDetour);
             closeAddonHook.Enable();
-            //PassportCheckerReborn.Log.Information(
-            //    "[PartyFinderManager] AtkUnitBase.Close hook installed and enabled.");
         }
         catch (Exception)
         {
@@ -574,23 +570,6 @@ public sealed class PartyFinderManager : IDisposable
                 ? System.Text.Encoding.UTF8.GetString(nameSpan[4..]).TrimEnd('\0')
                 : string.Empty;
 
-            var freeCompany = System.Text.Encoding.UTF8.GetString(packet->FreeCompany).TrimEnd('\0');
-
-            PassportCheckerReborn.Log.Debug(
-                $"[PCR:CharaCard] Packet received — " +
-                $"ContentId={packet->ContentId:X16}, " +
-                $"AccountId={packet->AccountId:X16}, " +
-                $"EntityId={packet->EntityId:X8}, " +
-                $"Name=\"{name}\", " +
-                $"WorldId={packet->WorldId}, " +
-                $"Level={packet->Level}, " +
-                $"ClassJobId={packet->ClassJobId}, " +
-                $"Sex={packet->Sex}, " +
-                $"GrandCompany={packet->GrandCompany}, " +
-                $"GcRank={packet->GcRank}, " +
-                $"SomeState={packet->SomeState}, " +
-                $"FreeCompany=\"{freeCompany}\"");
-
             OnCharaCardReceived?.Invoke(new CharaCardResult(packet->ContentId, name, packet->WorldId, false));
         }
         catch (Exception ex)
@@ -631,14 +610,10 @@ public sealed class PartyFinderManager : IDisposable
     /// </summary>
     private async Task<CharaCardResult?> RequestCharaCardAsync(ulong contentId, CancellationToken ct)
     {
-        PassportCheckerReborn.Log.Information(
-            $"[PCR:CharaCard] RequestCharaCardAsync waiting for gate — CID={contentId:X16}");
         await charaCardRequestGate.WaitAsync(ct);
 
         try
         {
-            PassportCheckerReborn.Log.Information(
-                $"[PCR:CharaCard] Gate acquired, throttling {CharaCardThrottleMs}ms — CID={contentId:X16}");
             // Throttle between requests
             await Task.Delay(CharaCardThrottleMs, ct);
 
@@ -768,7 +743,7 @@ public sealed class PartyFinderManager : IDisposable
                     {
                         var slotNumber = i + 1;
                         PassportCheckerReborn.Log.Information(
-                            $"[PCR:Resolve] Adventure plate returned empty name for slot {i} (CID={member.ContentId:X16}) — marking as Unresolved Player {slotNumber}.");
+                            $"[PCR:Resolve] Adventure plate returned empty name for slot {i}) — marking as Unresolved Player {slotNumber}.");
                         currentMembers[i] = member with { Name = $"Unresolved Player {slotNumber}" };
                     }
                 }
@@ -985,8 +960,6 @@ public sealed class PartyFinderManager : IDisposable
             return;
 
         var contentId = target.TargetContentId;
-        PassportCheckerReborn.Log.Information(
-            $"[PartyFinderManager] View Recruitment requested for ContentId {contentId:X16}");
 
         // Check if this player has a known PF listing
         if (!pfListingPlayerCache.TryGetValue(contentId, out var cached) || cached.ListingId == 0)
@@ -1153,6 +1126,11 @@ public sealed class PartyFinderManager : IDisposable
                 CurrentDutyId = post.DutyId;
                 IsHighEndDuty = CheckHighEndDuty(CurrentDutyId);
 
+                // Resolve the duty name from ContentFinderCondition using the RowId
+                var cfcName = GetDutyNameFromId(CurrentDutyId);
+                if (!string.IsNullOrEmpty(cfcName))
+                    CurrentDutyName = cfcName;
+
                 // Also check the DutyCategory flag for HighEndDuty as a belt-and-braces check
                 if (!IsHighEndDuty && post.Category.HasFlag(AgentLookingForGroup.DutyCategory.HighEndDuty))
                     IsHighEndDuty = true;
@@ -1227,6 +1205,33 @@ public sealed class PartyFinderManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns the duty name for the given <paramref name="dutyId"/> by looking up
+    /// the matching <see cref="ContentFinderCondition"/> row (RowId == dutyId).
+    /// Returns <c>null</c> if the row does not exist or the name is empty.
+    /// </summary>
+    public static string? GetDutyNameFromId(uint dutyId)
+    {
+        try
+        {
+            var sheet = PassportCheckerReborn.DataManager.GetExcelSheet<ContentFinderCondition>();
+            if (sheet == null)
+                return null;
+
+            var row = sheet.GetRowOrDefault(dutyId);
+            if (row == null)
+                return null;
+
+            var name = row.Value.Name.ToString();
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to get duty name for id {0}.", dutyId);
+            return null;
+        }
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     // Member Discovery
     // ═════════════════════════════════════════════════════════════════════════
@@ -1258,9 +1263,9 @@ public sealed class PartyFinderManager : IDisposable
             var classJobSheet = PassportCheckerReborn.DataManager.GetExcelSheet<ClassJob>();
             var worldSheet = PassportCheckerReborn.DataManager.GetExcelSheet<World>();
 
-            //PassportCheckerReborn.Log.Information(
-                //$"[PCR:Refresh] PopulateListingData post: ListingId={post.ListingId:X16} LeaderCID={post.LeaderContentId:X16} " +
-                //$"DutyId={post.DutyId} TotalSlots={post.TotalSlots} SlotsFilled={post.SlotsFilled} IsAlliance={post.IsAlliance}");
+            PassportCheckerReborn.Log.Information(
+                $"[PCR:Refresh] PopulateListingData post: ListingId={post.ListingId:X16} " +
+                $"DutyId={post.DutyId} TotalSlots={post.TotalSlots} SlotsFilled={post.SlotsFilled} IsAlliance={post.IsAlliance}");
 
             // ── Leader (slot 0) ─────────────────────────────────────────────
             // LeaderContentId is a dedicated field in Detailed; the leader name
@@ -1308,9 +1313,10 @@ public sealed class PartyFinderManager : IDisposable
             }
 
             // ── Other members (MemberContentIds[0..47]) ─────────────────────
-            // Scan all 48 slots; skip zeroes and the leader (already added).
-            // Cap at SlotsFilled to avoid reading stale data for listings with fewer members.
-            var slotsToScan = (post.SlotsFilled > 0 && post.SlotsFilled <= 48) ? (int)post.SlotsFilled : 48;
+            // Scan all slots up to TotalSlots — MemberContentIds is indexed by slot position,
+            // so members can occupy any slot within [0, TotalSlots). Reading beyond TotalSlots
+            // produces garbage data; using SlotsFilled would skip members in higher-numbered slots.
+            var slotsToScan = (post.TotalSlots > 0 && post.TotalSlots <= 48) ? (int)post.TotalSlots : 48;
             var nonZeroSlots = 0;
             for (var i = 0; i < slotsToScan; i++)
             {
@@ -1427,18 +1433,14 @@ public sealed class PartyFinderManager : IDisposable
     /// </summary>
     private unsafe void ReadBlacklistFromAddon()
     {
-        //PassportCheckerReborn.Log.Debug("[PartyFinderManager] ReadBlacklistFromAddon called.");
         var newEntries = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         try
         {
             var array = BlackListStringArray.Instance();
             if (array == null)
             {
-                //PassportCheckerReborn.Log.Debug("[PartyFinderManager] BlackListStringArray.Instance() returned null – skipping update.");
                 return;
             }
-
-            //PassportCheckerReborn.Log.Debug($"[PartyFinderManager] BlackListStringArray obtained. PlayerNames.Length={array->PlayerNames.Length}");
 
             var names = array->PlayerNames;
             var worlds = array->Homeworlds;

@@ -107,10 +107,14 @@ public sealed partial class TomestoneService : IDisposable
                 new("dawntrail", "extremes", "the-windward-wilds"),
             ["Hell on Rails (Extreme)"] =
                 new("dawntrail", "extremes", "hell-on-rails"),
+            ["The Unmaking (Extreme)"] =
+                new("dawntrail", "extremes", "the-unmaking"),
 
             // ── Dawntrail Unreal ──────────────────────────────────────────────────
             ["Tsukuyomi's Pain (Unreal)"] =
                 new("dawntrail", "extremes", "tsukuyomis-pain"),
+            ["Shinryu's Domain (Unreal)"] =
+                new("dawntrail", "extremes", "shinryus-domain"),
 
             // ── Dawntrail Chaotic ─────────────────────────────────────────────────
             ["The Cloud of Darkness (Chaotic)"] =

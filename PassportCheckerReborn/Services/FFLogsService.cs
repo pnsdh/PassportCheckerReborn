@@ -403,6 +403,7 @@ public sealed class FFLogsService : IDisposable
 
         // Unreal Trials
         ["Tsukuyomi's Pain (Unreal)"] = (64, 3012, DifficultyNormal),
+        ["Shinryu's Domain (Unreal)"] = (64, 3013, DifficultyNormal),
 
         // Extreme Trials
         ["Worqor Lar Dor (Extreme)"] = (58, 1071, DifficultyNormal),
@@ -412,6 +413,7 @@ public sealed class FFLogsService : IDisposable
         ["The Minstrel's Ballad: Necron's Embrace"] = (67, 1081, DifficultyNormal),
         ["The Windward Wilds (Extreme)"] = (67, 1082, DifficultyNormal),
         ["Hell on Rails (Extreme)"] = (72, 1083, DifficultyNormal),
+        ["The Unmaking (Extreme)"] = (72, 1084, DifficultyNormal),
 
         // Ultimate Raids
         ["The Unending Coil of Bahamut (Ultimate)"] = (59, 1073, DifficultyNormal),
