@@ -817,6 +817,7 @@ public sealed class PartyFinderManager : IDisposable
         resolveCts = null;
 
         IsDetailOpen = false;
+        plugin.PFWindow.IsOpen = false;
         currentMembers.Clear();
         currentDetailedPost = null;
         CurrentDutyId = 0;
