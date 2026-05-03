@@ -42,6 +42,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     // Tracks whether Tomestone data has been fetched (user clicked button) for this generation
     private bool tomestoneFetched;
 
+    // Cached size of this overlay window from the previous frame, used for clamping in PreDraw
+    private Vector2 lastWindowSize = new(300f, 200f);
+
     public void Dispose()
     {
         GC.SuppressFinalize(this);
@@ -69,24 +72,35 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     // Get the ImGui viewport offset for coordinate conversion
                     var vpPos = ImGui.GetMainViewport().Pos;
 
-                    float overlayX;
+                    var overlayY = vpPos.Y + addonY;
+
                     if (plugin.Configuration.ShowOverlayOnLeftSide)
                     {
-                        // Place overlay to the left of the addon
-                        // Estimate overlay width at ~300px (auto-resize will adjust)
-                        overlayX = vpPos.X + addonX - 310;
-                        if (overlayX < vpPos.X)
-                            overlayX = vpPos.X; // Clamp to screen edge
+                        // Anchor the top-right corner of the overlay to the left edge of the addon
+                        // so the window grows leftward and does not cover LookingForGroupDetail.
+                        var anchorX = vpPos.X + addonX - 10;
+
+                        // Clamp so the left edge of the window (anchorX - windowWidth) stays on screen.
+                        // Use the previous frame's size for estimation; falls back to a safe default on first frame.
+                        var windowWidth = lastWindowSize.X;
+                        var vpSize = ImGui.GetMainViewport().Size;
+                        var minAnchorX = vpPos.X + windowWidth;
+                        var maxAnchorX = vpPos.X + vpSize.X;
+                        anchorX = Math.Clamp(anchorX, minAnchorX, maxAnchorX);
+
+                        ImGui.SetNextWindowPos(new Vector2(anchorX, overlayY), ImGuiCond.Always, new Vector2(1f, 0f));
+                        Position = null;
                     }
                     else
                     {
-                        // Place overlay to the right of the addon
-                        overlayX = vpPos.X + addonX + addonWidth + 10;
+                        // Place overlay to the right of the addon, clamped to screen edge.
+                        var vpSize = ImGui.GetMainViewport().Size;
+                        var overlayX = vpPos.X + addonX + addonWidth + 10;
+                        var windowWidth = lastWindowSize.X;
+                        overlayX = Math.Min(overlayX, vpPos.X + vpSize.X - windowWidth);
+                        overlayX = Math.Max(overlayX, vpPos.X);
+                        Position = new Vector2(overlayX, overlayY);
                     }
-
-                    var overlayY = vpPos.Y + addonY;
-
-                    Position = new Vector2(overlayX, overlayY);
                     return;
                 }
             }
@@ -147,10 +161,28 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
 
         // ── Player rows (info + cached data, no per-row buttons) ────────────
-        for (var i = 0; i < members.Count; i++)
+        var hasTomestone = cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey);
+        var hasFFLogs = cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret);
+
+        var columnCount = 1 + (hasTomestone ? 1 : 0) + (hasFFLogs ? 1 : 0);
+        var tableFlags = ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.NoHostExtendX;
+
+        if (ImGui.BeginTable("##members_table", columnCount, tableFlags))
         {
-            var member = members[i];
-            DrawMemberRow(member, i, cfg);
+            ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed);
+            if (hasTomestone)
+                ImGui.TableSetupColumn("Tomestone", ImGuiTableColumnFlags.WidthFixed);
+            if (hasFFLogs)
+                ImGui.TableSetupColumn("FFLogs", ImGuiTableColumnFlags.WidthFixed);
+            ImGui.TableHeadersRow();
+
+            for (var i = 0; i < members.Count; i++)
+            {
+                var member = members[i];
+                DrawMemberRow(member, i, cfg, hasTomestone, hasFFLogs);
+            }
+
+            ImGui.EndTable();
         }
 
         // ── Shared Tomestone / FFLogs buttons below all rows ────────────────
@@ -249,33 +281,31 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 }
             }
         }
+
+        // Capture this frame's window size for use in PreDraw() clamping next frame
+        lastWindowSize = ImGui.GetWindowSize();
     }
 
-    private void DrawMemberRow(PartyMemberInfo member, int index, Configuration cfg)
+    private void DrawMemberRow(PartyMemberInfo member, int index, Configuration cfg, bool hasTomestone, bool hasFFLogs)
     {
+        ImGui.TableNextRow();
         ImGui.PushID(index);
 
-        // ── Known-player border (TODO item 7) ────────────────────────────────
+        // ── Known-player / blacklist checks ──────────────────────────────────
         var isKnown = cfg.SpecialBorderColorForKnownPlayers &&
                       plugin.PartyFinderManager.IsKnownPlayer(member.Name, member.World);
         var isBlacklisted = plugin.PartyFinderManager.IsBlacklisted(member.Name, member.World);
 
         if (isKnown)
         {
-            // Draw a coloured border around this member's row using ImGui draw list
-            var cursorPos = ImGui.GetCursorScreenPos();
-            var borderColor = ImGui.ColorConvertFloat4ToU32(cfg.KnownPlayerBorderColor);
-            var drawList = ImGui.GetWindowDrawList();
-
-            // Estimate row height (~20px) and width (~400px) – auto-adjusted after content
-            const float estimatedRowWidth = 400f;
-            const float estimatedRowHeight = 22f;
-            var rowMin = cursorPos - new Vector2(2, 2);
-            var rowMax = cursorPos + new Vector2(estimatedRowWidth, estimatedRowHeight);
-            drawList.AddRect(rowMin, rowMax, borderColor, 3.0f, ImDrawFlags.RoundCornersAll, 2.0f);
+            var rowColor = ImGui.ColorConvertFloat4ToU32(cfg.KnownPlayerBorderColor with { W = 0.18f });
+            ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, rowColor);
         }
 
-        // ── Job icon (TODO item 8) ──────────────────────────────────────────
+        // ── Column 0: Job icon + player name + badges ─────────────────────
+        ImGui.TableSetColumnIndex(0);
+
+        // ── Job icon ──────────────────────────────────────────────────────
         var jobIconId = 0u;
         if (!string.IsNullOrWhiteSpace(member.JobAbbreviation))
         {
@@ -287,7 +317,6 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         if (cfg.ShowPartyJobIcons && jobIconId > 0)
         {
-            // Try to load the actual job icon texture from the game data
             try
             {
                 var iconLookup = new GameIconLookup(jobIconId);
@@ -301,14 +330,12 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 }
                 else
                 {
-                    // Texture not yet loaded – show abbreviation as fallback
                     ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{member.JobAbbreviation,-3}]");
                     ImGui.SameLine();
                 }
             }
             catch
             {
-                // Fallback to text abbreviation if texture loading fails
                 ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{member.JobAbbreviation,-3}]");
                 ImGui.SameLine();
             }
@@ -351,186 +378,166 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 ImGui.SetTooltip("On your blacklist");
         }
 
-        // ── Cached Tomestone data
-        if (!member.IsPrivate && cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey) && tomestoneFetched)
+        // ── Column 1: Tomestone data ──────────────────────────────────────
+        if (hasTomestone)
         {
-            if (tomestoneBatchInProgress)
+            ImGui.TableNextColumn();
+            if (!member.IsPrivate && tomestoneFetched)
             {
-                ImGui.SameLine();
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
-            }
-            else if (tomestoneInfoCache.TryGetValue(index, out var cachedTs))
-            {
-                ImGui.SameLine();
-                if (cachedTs != null)
+                if (tomestoneBatchInProgress)
                 {
-                    var hasClears = cachedTs.TotalClears.HasValue && cachedTs.TotalClears.Value > 0;
-                    var hasProgPoint = !string.IsNullOrWhiteSpace(cachedTs.ProgPoint);
-                    var hasBestParse = cachedTs.BestPercent.HasValue;
+                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
+                }
+                else if (tomestoneInfoCache.TryGetValue(index, out var cachedTs))
+                {
+                    if (cachedTs != null)
+                    {
+                        var hasClears = cachedTs.TotalClears.HasValue && cachedTs.TotalClears.Value > 0;
+                        var hasProgPoint = !string.IsNullOrWhiteSpace(cachedTs.ProgPoint);
+                        var hasBestParse = cachedTs.BestPercent.HasValue;
 
-                    if (hasClears)
-                    {
-                        var clearsColor = new Vector4(0.4f, 0.8f, 0.4f, 1.0f);
-                        var clearsText = "Cleared";
-                        if (!string.IsNullOrWhiteSpace(cachedTs.CompletionWeek))
-                            clearsText += $" ({cachedTs.CompletionWeek})";
-                        if (hasBestParse)
-                            clearsText += $" | Best: {cachedTs.BestPercent:F0}%";
-                        ImGui.TextColored(clearsColor, clearsText);
-                    }
-                    else if (hasProgPoint)
-                    {
-                        var progText = cachedTs.ProgPoint!;
-                        if (!string.IsNullOrWhiteSpace(cachedTs.DisplayPercent))
-                            progText += $" ({cachedTs.DisplayPercent})";
-                        ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), progText);
-                    }
-                    else if (hasBestParse)
-                    {
-                        ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                            $"Best: {cachedTs.BestPercent:F0}%");
+                        if (hasClears)
+                        {
+                            var clearsText = "Cleared";
+                            if (!string.IsNullOrWhiteSpace(cachedTs.CompletionWeek))
+                                clearsText += $" ({cachedTs.CompletionWeek})";
+                            if (hasBestParse)
+                                clearsText += $" | Best: {cachedTs.BestPercent:F0}%";
+                            ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f), clearsText);
+                        }
+                        else if (hasProgPoint)
+                        {
+                            var progText = cachedTs.ProgPoint!;
+                            if (!string.IsNullOrWhiteSpace(cachedTs.DisplayPercent))
+                                progText += $" ({cachedTs.DisplayPercent})";
+                            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), progText);
+                        }
+                        else if (hasBestParse)
+                        {
+                            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
+                                $"Best: {cachedTs.BestPercent:F0}%");
+                        }
+                        else
+                        {
+                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
+                        }
                     }
                     else
                     {
                         ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
                     }
                 }
-                else
-                {
-                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
-                }
             }
         }
 
-        // ── Cached FFLogs encounter data (only shown after user clicks FFLogs button) ──
-        if (!member.IsPrivate && cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret) && fflogsFetched)
+        // ── Column 2: FFLogs data ─────────────────────────────────────────
+        if (hasFFLogs)
         {
-            if (fflogsBatchInProgress)
+            ImGui.TableNextColumn();
+            if (!member.IsPrivate && fflogsFetched)
             {
-                ImGui.SameLine();
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
-            }
-            else if (fflogsEncounterCache.TryGetValue(index, out var cachedFf))
-            {
-                ImGui.SameLine();
-                if (cachedFf is null || !cachedFf.HasData)
+                if (fflogsBatchInProgress)
                 {
-                    DrawNoLogsWithAverage(cachedFf?.AverageParsePercent);
+                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
                 }
-                else if (cachedFf.IsEncounterSpecific)
+                else if (fflogsEncounterCache.TryGetValue(index, out var cachedFf))
                 {
-                    var hasMultiPhaseData = cachedFf.Phase1TotalKills.HasValue ||
-                                            cachedFf.Phase2TotalKills.HasValue ||
-                                            cachedFf.Phase1BestParse.HasValue ||
-                                            cachedFf.Phase2BestParse.HasValue ||
-                                            cachedFf.Phase2LowestBossHpPct.HasValue;
-
-                    if (hasMultiPhaseData)
+                    if (cachedFf is null || !cachedFf.HasData)
                     {
-                        var p1Parse = cachedFf.Phase1BestParse;
-                        var p2Parse = cachedFf.Phase2BestParse;
+                        DrawNoLogsWithAverage(cachedFf?.AverageParsePercent);
+                    }
+                    else if (cachedFf.IsEncounterSpecific)
+                    {
+                        var hasMultiPhaseData = cachedFf.Phase1TotalKills.HasValue ||
+                                                cachedFf.Phase2TotalKills.HasValue ||
+                                                cachedFf.Phase1BestParse.HasValue ||
+                                                cachedFf.Phase2BestParse.HasValue ||
+                                                cachedFf.Phase2LowestBossHpPct.HasValue;
 
-                        if (cachedFf.TotalKills > 0 && p1Parse.HasValue && p2Parse.HasValue)
+                        if (hasMultiPhaseData)
                         {
-                            // Show best parse for current job if available
+                            var p1Parse = cachedFf.Phase1BestParse;
+                            var p2Parse = cachedFf.Phase2BestParse;
+
+                            if (cachedFf.TotalKills > 0 && p1Parse.HasValue && p2Parse.HasValue)
+                            {
+                                if (cachedFf.CurrentJobBestParse.HasValue)
+                                {
+                                    ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f),
+                                        $"Cleared {cachedFf.TotalKills}X");
+                                    ImGui.SameLine();
+                                    ImGui.TextUnformatted("P1");
+                                    ImGui.SameLine();
+                                    ImGui.TextColored(GetParseColor(p1Parse.Value), $"{p1Parse.Value:F0}%");
+                                    ImGui.SameLine();
+                                    ImGui.TextUnformatted("P2");
+                                    ImGui.SameLine();
+                                    ImGui.TextColored(GetParseColor(p2Parse.Value), $"{p2Parse.Value:F0}%");
+                                }
+                                else
+                                {
+                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f),
+                                        $"Cleared {cachedFf.TotalKills}X P1 {p1Parse.Value:F0}% P2 {p2Parse.Value:F0}%");
+                                }
+
+                                DrawBestParseOnDifferentJob(cachedFf, member);
+                            }
+                            else
+                            {
+                                if (p1Parse.HasValue)
+                                    ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F0}%");
+                                else
+                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P1 No logs");
+
+                                ImGui.SameLine();
+
+                                if (cachedFf.Phase2LowestBossHpPct.HasValue)
+                                    ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
+                                        $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F0}%");
+                                else if (p2Parse.HasValue)
+                                    ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F0}%");
+                                else
+                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P2 No logs");
+
+                                DrawBestParseOnDifferentJob(cachedFf, member);
+                            }
+                        }
+                        else if (cachedFf.TotalKills > 0)
+                        {
                             if (cachedFf.CurrentJobBestParse.HasValue)
                             {
-                                ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f),
-                                    $"Cleared {cachedFf.TotalKills}X");
-                                ImGui.SameLine();
-                                ImGui.TextUnformatted("P1");
-                                ImGui.SameLine();
-                                ImGui.TextColored(GetParseColor(p1Parse.Value), $"{p1Parse.Value:F0}%");
-                                ImGui.SameLine();
-                                ImGui.TextUnformatted("P2");
-                                ImGui.SameLine();
-                                ImGui.TextColored(GetParseColor(p2Parse.Value), $"{p2Parse.Value:F0}%");
+                                ImGui.TextColored(GetParseColor(cachedFf.CurrentJobBestParse.Value),
+                                    $"Cleared {cachedFf.TotalKills}X {cachedFf.CurrentJobBestParse.Value:F0}%");
                             }
                             else
                             {
-                                // Has clears but no current job logs
                                 ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f),
-                                    $"Cleared {cachedFf.TotalKills}X P1 {p1Parse.Value:F0}% P2 {p2Parse.Value:F0}%");
+                                    $"Cleared {cachedFf.TotalKills}X No Current Job Logs");
                             }
 
-                            // Show best parse on a different job if applicable
                             DrawBestParseOnDifferentJob(cachedFf, member);
+                        }
+                        else if (cachedFf.LowestBossHpPct.HasValue)
+                        {
+                            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
+                                $"{cachedFf.LowestBossHpPct.Value:F0}%");
+                        }
+                        else if (cachedFf.AverageParsePercent.HasValue)
+                        {
+                            DrawNoLogsWithAverage(cachedFf.AverageParsePercent);
                         }
                         else
                         {
-                            if (p1Parse.HasValue)
-                            {
-                                ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F0}%");
-                            }
-                            else
-                            {
-                                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P1 No logs");
-                            }
-
-                            ImGui.SameLine();
-
-                            if (cachedFf.Phase2LowestBossHpPct.HasValue)
-                            {
-                                ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                                    $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F0}%");
-                            }
-                            else if (p2Parse.HasValue)
-                            {
-                                ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F0}%");
-                            }
-                            else
-                            {
-                                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P2 No logs");
-                            }
-
-                            // Show best parse on a different job if applicable
-                            DrawBestParseOnDifferentJob(cachedFf, member);
+                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
                         }
                     }
-                    else if (cachedFf.TotalKills > 0)
+                    else
                     {
-                        // Show best parse for current job
-                        if (cachedFf.CurrentJobBestParse.HasValue)
-                        {
-                            var parseStr = $"{cachedFf.CurrentJobBestParse.Value:F0}%";
-                            var displayStr = $"Cleared {cachedFf.TotalKills}X {parseStr}";
-                            ImGui.TextColored(GetParseColor(cachedFf.CurrentJobBestParse.Value), displayStr);
-                        }
+                        if (cachedFf.BestParse.HasValue)
+                            ImGui.TextColored(GetParseColor(cachedFf.BestParse.Value),
+                                $"Average overall parse {cachedFf.BestParse.Value:F1}%");
                         else
-                        {
-                            // Player has clears but no logs on their current job
-                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f),
-                                $"Cleared {cachedFf.TotalKills}X No Current Job Logs");
-                        }
-
-                        // Show best parse on a different job only if it differs from current job
-                        DrawBestParseOnDifferentJob(cachedFf, member);
-                    }
-                    else if (cachedFf.LowestBossHpPct.HasValue)
-                    {
-                        ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                            $"{cachedFf.LowestBossHpPct.Value:F0}%");
-                    }
-                    else if (cachedFf.AverageParsePercent.HasValue)
-                    {
-                        DrawNoLogsWithAverage(cachedFf.AverageParsePercent);
-                    }
-                    else
-                    {
-                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
-                    }
-                }
-                else
-                {
-                    // General parse fallback (encounter not detected)
-                    if (cachedFf.BestParse.HasValue)
-                    {
-                        var color = GetParseColor(cachedFf.BestParse.Value);
-                        ImGui.TextColored(color, $" Average overall parse {cachedFf.BestParse.Value:F1}%");
-                    }
-                    else
-                    {
-                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "N/A");
+                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "N/A");
                     }
                 }
             }
