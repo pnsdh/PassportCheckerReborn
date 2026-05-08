@@ -206,7 +206,9 @@ public sealed partial class TomestoneService : IDisposable
         string playerName, string world, string? dutyName = null)
     {
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(world))
+        {
             return null;
+        }
 
         var info = new TomestoneCharacterInfo
         {
@@ -252,7 +254,9 @@ public sealed partial class TomestoneService : IDisposable
         if (fallbackEncounterParams != null && info.ProgPoint == null && !info.TotalClears.HasValue)
         {
             if (!string.IsNullOrWhiteSpace(info.CharacterId))
+            {
                 await FetchFullProfileByIdAsync(info, info.CharacterId, dutyName, fallbackEncounterParams);
+            }
 
             if (info.ProgPoint == null && !info.TotalClears.HasValue)
             {
@@ -275,7 +279,9 @@ public sealed partial class TomestoneService : IDisposable
     public async Task<string?> ResolveLodestoneIdAsync(string playerName, string world)
     {
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(world))
+        {
             return null;
+        }
 
         try
         {
@@ -318,9 +324,15 @@ public sealed partial class TomestoneService : IDisposable
     public static TomestoneEncounterParams? GetEncounterParamsForDuty(string? dutyName)
     {
         if (string.IsNullOrWhiteSpace(dutyName))
+        {
             return null;
+        }
+
         if (DutyNameToTomestoneParams.TryGetValue(dutyName, out var p))
+        {
             return p;
+        }
+
         MultiPartDutyToTomestoneParams.TryGetValue(dutyName, out p);
         return p;
     }
@@ -441,11 +453,17 @@ public sealed partial class TomestoneService : IDisposable
 
             // Extract Lodestone ID from various possible field names
             if (root.TryGetProperty("lodestoneId", out var idEl))
+            {
                 info.CharacterId = ReadIdValue(idEl);
+            }
             else if (root.TryGetProperty("lodestone_id", out var idEl2))
+            {
                 info.CharacterId = ReadIdValue(idEl2);
+            }
             else if (root.TryGetProperty("id", out var idEl3))
+            {
                 info.CharacterId = ReadIdValue(idEl3);
+            }
         }
         catch (Exception)
         {
@@ -463,7 +481,9 @@ public sealed partial class TomestoneService : IDisposable
         string? dutyName, TomestoneEncounterParams? encounterParams)
     {
         if (string.IsNullOrWhiteSpace(dutyName) && encounterParams == null)
+        {
             return;
+        }
 
         try
         {
@@ -519,7 +539,9 @@ public sealed partial class TomestoneService : IDisposable
         }
 
         if (graph.ValueKind != JsonValueKind.Array)
+        {
             return ParseDirectProgPoint(root);
+        }
 
         // Find the entry with the highest duration → the furthest mechanic reached
         var bestDuration = 0;
@@ -528,10 +550,16 @@ public sealed partial class TomestoneService : IDisposable
         foreach (var point in graph.EnumerateArray())
         {
             if (!point.TryGetProperty("duration", out var durEl))
+            {
                 continue;
+            }
+
             var dur = durEl.GetInt32();
             if (dur <= bestDuration)
+            {
                 continue;
+            }
+
             bestDuration = dur;
 
             if (point.TryGetProperty("mechanic", out var mechEl))
@@ -555,13 +583,25 @@ public sealed partial class TomestoneService : IDisposable
     {
         // Try "percent" or "bestPercent" as a direct value
         if (root.TryGetProperty("percent", out var pctEl))
+        {
             return pctEl.ToString();
+        }
+
         if (root.TryGetProperty("bestPercent", out var bestPctEl))
+        {
             return bestPctEl.ToString();
+        }
+
         if (root.TryGetProperty("progPoint", out var progEl))
+        {
             return progEl.GetString();
+        }
+
         if (root.TryGetProperty("prog_point", out var prog2El))
+        {
             return prog2El.GetString();
+        }
+
         return null;
     }
 
@@ -635,7 +675,9 @@ public sealed partial class TomestoneService : IDisposable
                 if (bpEl.TryGetDouble(out var pct))
                 {
                     if (!bestPercent.HasValue || pct > bestPercent.Value)
+                    {
                         bestPercent = pct;
+                    }
                 }
                 else if (bpEl.ValueKind == JsonValueKind.String)
                 {
@@ -644,17 +686,23 @@ public sealed partial class TomestoneService : IDisposable
                         NumberStyles.Float, CultureInfo.InvariantCulture, out var pctFromStr))
                     {
                         if (!bestPercent.HasValue || pctFromStr > bestPercent.Value)
+                        {
                             bestPercent = pctFromStr;
+                        }
                     }
                 }
             }
         }
 
         if (totalKills > 0)
+        {
             info.TotalClears = totalKills;
+        }
 
         if (bestPercent.HasValue)
+        {
             info.BestPercent = bestPercent.Value;
+        }
     }
 
     /// <summary>
@@ -664,14 +712,20 @@ public sealed partial class TomestoneService : IDisposable
     {
         if (root.TryGetProperty("clears", out var clearsEl) &&
             clearsEl.TryGetInt32(out var clears))
+        {
             info.TotalClears = clears;
+        }
         else if (root.TryGetProperty("killsCount", out var kEl) &&
                  kEl.TryGetInt32(out var k))
+        {
             info.TotalClears = k;
+        }
 
         if (root.TryGetProperty("bestPercent", out var bpEl) &&
             bpEl.TryGetDouble(out var bp))
+        {
             info.BestPercent = bp;
+        }
     }
 
     /// <summary>
@@ -686,19 +740,25 @@ public sealed partial class TomestoneService : IDisposable
     {
         if (!root.TryGetProperty("encounters", out var encountersEl) ||
             encountersEl.ValueKind != JsonValueKind.Object)
+        {
             return;
+        }
 
         // Encounter categories that may contain grouped or flat encounters
         foreach (var category in new[] { "savage", "ultimate", "extremes", "criterion", "chaotic", "quantum" })
         {
             if (!encountersEl.TryGetProperty(category, out var catEl) ||
                 catEl.ValueKind != JsonValueKind.Array)
+            {
                 continue;
+            }
 
             foreach (var group in catEl.EnumerateArray())
             {
                 if (group.ValueKind != JsonValueKind.Object)
+                {
                     continue;
+                }
 
                 // Savage / ultimate groups have a nested "encounters" array
                 if (group.TryGetProperty("encounters", out var subEncounters) &&
@@ -751,7 +811,9 @@ public sealed partial class TomestoneService : IDisposable
             {
                 var slug = BuildTomestoneSlug(nameEl.GetString() ?? string.Empty);
                 if (string.Equals(slug, encounterParams.Encounter, StringComparison.OrdinalIgnoreCase))
+                {
                     return true;
+                }
             }
 
             // Attempt 2: slug the zoneName field (matches most encounter types, e.g. ultimates, extremes)
@@ -759,7 +821,9 @@ public sealed partial class TomestoneService : IDisposable
             {
                 var zoneSlug = BuildTomestoneSlug(zoneNameEl.GetString() ?? string.Empty);
                 if (string.Equals(zoneSlug, encounterParams.Encounter, StringComparison.OrdinalIgnoreCase))
+                {
                     return true;
+                }
             }
 
             // Attempt 3: slug the name field (multi-phase encounters like Lindwurm / Lindwurm II)
@@ -767,7 +831,9 @@ public sealed partial class TomestoneService : IDisposable
             {
                 var nameSlug = BuildTomestoneSlug(encNameEl.GetString() ?? string.Empty);
                 if (string.Equals(nameSlug, encounterParams.Encounter, StringComparison.OrdinalIgnoreCase))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -779,7 +845,9 @@ public sealed partial class TomestoneService : IDisposable
         {
             var zoneName = zoneEl.GetString();
             if (zoneName != null && zoneName.Equals(dutyName, StringComparison.OrdinalIgnoreCase))
+            {
                 return true;
+            }
         }
 
         return false;
@@ -803,7 +871,9 @@ public sealed partial class TomestoneService : IDisposable
             {
                 var cw = cwEl.GetString();
                 if (!string.IsNullOrWhiteSpace(cw))
+                {
                     info.CompletionWeek = cw;
+                }
             }
         }
 
@@ -822,10 +892,14 @@ public sealed partial class TomestoneService : IDisposable
                 // since a single occurrence doesn't need disambiguation.
                 var mechNum = 0;
                 if (mechEl.TryGetProperty("number", out var numEl))
+                {
                     numEl.TryGetInt32(out mechNum);
+                }
 
                 if (!string.IsNullOrWhiteSpace(mechName))
+                {
                     info.ProgPoint = mechNum > 1 ? $"{mechName} #{mechNum}" : mechName;
+                }
             }
 
             // Use "displayPercent" from the API response as the shown percentage.
@@ -834,7 +908,9 @@ public sealed partial class TomestoneService : IDisposable
             {
                 var dp = displayPctEl.GetString();
                 if (!string.IsNullOrWhiteSpace(dp))
+                {
                     info.DisplayPercent = dp;
+                }
             }
 
             // Fallback: use the percentage string (e.g. "57%")
@@ -870,7 +946,9 @@ public sealed partial class TomestoneService : IDisposable
     private static string BuildTomestoneSlug(string playerName)
     {
         if (string.IsNullOrWhiteSpace(playerName))
+        {
             return string.Empty;
+        }
 
         // Tomestone slugs are lowercase, with spaces replaced by hyphens and
         // all non-alphanumeric / non-hyphen characters stripped.
@@ -884,10 +962,14 @@ public sealed partial class TomestoneService : IDisposable
     private static string? ReadIdValue(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var idValue))
+        {
             return idValue.ToString();
+        }
 
         if (element.ValueKind == JsonValueKind.String)
+        {
             return element.GetString();
+        }
 
         return null;
     }

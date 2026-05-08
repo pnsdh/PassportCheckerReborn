@@ -95,7 +95,9 @@ public sealed class BlacklistCache : IDisposable
     public void Save()
     {
         if (!dirty)
+        {
             return;
+        }
 
         try
         {
@@ -122,16 +124,22 @@ public sealed class BlacklistCache : IDisposable
         try
         {
             if (!File.Exists(filePath))
+            {
                 return;
+            }
 
             var json = File.ReadAllText(filePath);
             var deserialised = System.Text.Json.JsonSerializer
                 .Deserialize<Dictionary<string, BlacklistCacheEntry>>(json, JsonOptions);
             if (deserialised == null)
+            {
                 return;
+            }
 
             foreach (var (key, entry) in deserialised)
+            {
                 entries[key] = entry;
+            }
 
             PassportCheckerReborn.Log.Debug($"[BlacklistCache] Loaded {entries.Count} entries from disk.");
         }

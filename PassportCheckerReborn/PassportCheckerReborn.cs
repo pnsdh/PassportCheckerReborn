@@ -161,7 +161,9 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             {
                 var cwProxy = InfoProxyCrossRealm.Instance();
                 if (cwProxy != null && cwProxy->IsInCrossRealmParty)
+                {
                     hasPartyMembers = true;
+                }
             }
             catch
             {

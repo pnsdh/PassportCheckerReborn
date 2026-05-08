@@ -171,9 +171,15 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         {
             ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed);
             if (hasTomestone)
+            {
                 ImGui.TableSetupColumn("Tomestone", ImGuiTableColumnFlags.WidthFixed);
+            }
+
             if (hasFFLogs)
+            {
                 ImGui.TableSetupColumn("FFLogs", ImGuiTableColumnFlags.WidthFixed);
+            }
+
             ImGui.TableHeadersRow();
 
             for (var i = 0; i < members.Count; i++)
@@ -200,7 +206,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 ImGui.SmallButton("Tomestone API Key Needed##ts_all");
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                {
                     ImGui.SetTooltip("Configure your Tomestone API key in Settings \u2192 Tomestone Integration.");
+                }
             }
             else
             {
@@ -212,7 +220,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                         : "Tomestone##ts_all";
 
                 if (tsDisabled)
+                {
                     ImGui.BeginDisabled();
+                }
 
                 if (ImGui.SmallButton(tsLabel) && !tsDisabled)
                 {
@@ -222,16 +232,24 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 }
 
                 if (tsDisabled)
+                {
                     ImGui.EndDisabled();
+                }
 
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
                     if (isResolving)
+                    {
                         ImGui.SetTooltip("Waiting for player names to be resolved\u2026");
+                    }
                     else if (tomestoneBatchInProgress)
+                    {
                         ImGui.SetTooltip("Looking up Tomestone data for all players\u2026");
+                    }
                     else
+                    {
                         ImGui.SetTooltip("Look up Tomestone data for all players");
+                    }
                 }
             }
 
@@ -246,7 +264,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 ImGui.SmallButton("FFLogs API Key Needed##ff_all");
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                {
                     ImGui.SetTooltip("Configure your FFLogs credentials in Settings \u2192 FFLogs Integration.");
+                }
             }
             else
             {
@@ -258,7 +278,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                         : "FFLogs##ff_all";
 
                 if (ffDisabled)
+                {
                     ImGui.BeginDisabled();
+                }
 
                 if (ImGui.SmallButton(ffLabel) && !ffDisabled)
                 {
@@ -268,16 +290,24 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 }
 
                 if (ffDisabled)
+                {
                     ImGui.EndDisabled();
+                }
 
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
                     if (isResolving)
+                    {
                         ImGui.SetTooltip("Waiting for player names to be resolved\u2026");
+                    }
                     else if (fflogsBatchInProgress)
+                    {
                         ImGui.SetTooltip("Looking up FFLogs data for all players\u2026");
+                    }
                     else
+                    {
                         ImGui.SetTooltip("Look up FFLogs data for all players");
+                    }
                 }
             }
         }
@@ -312,7 +342,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             var spec = FFLogsService.GetSpecForJob(member.JobAbbreviation);
             var resolvedIconId = FFLogsService.GetJobIconIdForSpec(spec);
             if (resolvedIconId.HasValue)
+            {
                 jobIconId = resolvedIconId.Value;
+            }
         }
 
         if (cfg.ShowPartyJobIcons && jobIconId > 0)
@@ -347,27 +379,43 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         var isResolved = !isUnresolved;
         string displayName;
         if (member.IsPrivate)
+        {
             displayName = $"Private Player {index + 1}";
+        }
         else if (isUnresolved && member.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix))
+        {
             displayName = member.Name;
+        }
         else if (cfg.ShowResolvedPlayerNames && isResolved)
+        {
             displayName = $"{member.Name}@{member.World}";
+        }
         else
+        {
             displayName = $"Player {index + 1}";
+        }
 
         if (member.IsPrivate)
+        {
             ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), displayName);
+        }
         else if (isKnown)
+        {
             ImGui.TextColored(cfg.KnownPlayerBorderColor, displayName);
+        }
         else
+        {
             ImGui.TextUnformatted(displayName);
+        }
 
         if (member.IsPrivate)
         {
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "[Private]");
             if (ImGui.IsItemHovered())
+            {
                 ImGui.SetTooltip("Adventure plate is hidden or unavailable");
+            }
         }
 
         if (isBlacklisted)
@@ -375,7 +423,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.9f, 0.2f, 0.2f, 1.0f), "[BL]");
             if (ImGui.IsItemHovered())
+            {
                 ImGui.SetTooltip("On your blacklist");
+            }
         }
 
         // ── Column 1: Tomestone data ──────────────────────────────────────
@@ -400,16 +450,25 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                         {
                             var clearsText = "Cleared";
                             if (!string.IsNullOrWhiteSpace(cachedTs.CompletionWeek))
+                            {
                                 clearsText += $" ({cachedTs.CompletionWeek})";
+                            }
+
                             if (hasBestParse)
+                            {
                                 clearsText += $" | Best: {cachedTs.BestPercent:F0}%";
+                            }
+
                             ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f), clearsText);
                         }
                         else if (hasProgPoint)
                         {
                             var progText = cachedTs.ProgPoint!;
                             if (!string.IsNullOrWhiteSpace(cachedTs.DisplayPercent))
+                            {
                                 progText += $" ({cachedTs.DisplayPercent})";
+                            }
+
                             ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), progText);
                         }
                         else if (hasBestParse)
@@ -485,19 +544,29 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                             else
                             {
                                 if (p1Parse.HasValue)
+                                {
                                     ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F0}%");
+                                }
                                 else
+                                {
                                     ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P1 No logs");
+                                }
 
                                 ImGui.SameLine();
 
                                 if (cachedFf.Phase2LowestBossHpPct.HasValue)
+                                {
                                     ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
                                         $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F0}%");
+                                }
                                 else if (p2Parse.HasValue)
+                                {
                                     ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F0}%");
+                                }
                                 else
+                                {
                                     ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P2 No logs");
+                                }
 
                                 DrawBestParseOnDifferentJob(cachedFf, member);
                             }
@@ -534,10 +603,14 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     else
                     {
                         if (cachedFf.BestParse.HasValue)
+                        {
                             ImGui.TextColored(GetParseColor(cachedFf.BestParse.Value),
                                 $"Average overall parse {cachedFf.BestParse.Value:F1}%");
+                        }
                         else
+                        {
                             ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "N/A");
+                        }
                     }
                 }
             }
@@ -590,13 +663,17 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 }
 
                 foreach (var (index, result) in results)
+                {
                     tempCache[index] = result;
+                }
 
                 // Fill in any missing indices
                 for (var i = 0; i < members.Count; i++)
                 {
                     if (!tempCache.ContainsKey(i))
+                    {
                         tempCache[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                    }
                 }
 
                 // For players with no encounter-specific data, fetch their
@@ -620,7 +697,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                             var avg = await plugin.FFLogsService.GetBestPerfAvgAsync(
                                 members[i].Name, members[i].World);
                             if (avg.HasValue)
+                            {
                                 tempCache[i] = cached with { AverageParsePercent = avg.Value };
+                            }
                         }
                         catch (Exception)
                         {
@@ -758,7 +837,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 var characterId = info?.CharacterId;
 
                 if (string.IsNullOrWhiteSpace(characterId))
+                {
                     characterId = await plugin.TomestoneService.ResolveLodestoneIdAsync(member.Name, member.World);
+                }
 
                 TomestoneService.OpenTomestonePage(member.Name, member.World, characterId);
             }
@@ -809,17 +890,23 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     private static void DrawBestParseOnDifferentJob(EncounterParseResult cachedFf, PartyMemberInfo member)
     {
         if (!cachedFf.BestParse.HasValue || cachedFf.BestParseJobAbbreviation == null)
+        {
             return;
+        }
 
         // If current job is the best job, only current job parse is shown – skip
         if (string.Equals(cachedFf.BestParseJobAbbreviation, member.JobAbbreviation,
                 StringComparison.OrdinalIgnoreCase))
+        {
             return;
+        }
 
         // If the current job parse already matches or exceeds the best, skip
         if (cachedFf.CurrentJobBestParse.HasValue &&
             cachedFf.BestParse.Value <= cachedFf.CurrentJobBestParse.Value)
+        {
             return;
+        }
 
         DrawJobSpecBestParse(cachedFf.BestParse.Value, cachedFf.BestParseJobAbbreviation,
             cachedFf.BestParseJobIconId);

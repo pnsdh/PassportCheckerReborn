@@ -77,9 +77,14 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         // Position this window relative to the party list addon.
         // Try _PartyList first, then fall back to _CrossWorldPartyList for crossworld parties.
         if (TryPositionRelativeToAddon("_PartyList", position))
+        {
             return;
+        }
+
         if (TryPositionRelativeToAddon("_CrossWorldPartyList", position))
+        {
             return;
+        }
     }
 
     /// <summary>
@@ -92,11 +97,15 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         {
             var addonPtr = PassportCheckerReborn.GameGui.GetAddonByName(addonName, 1);
             if (addonPtr.IsNull)
+            {
                 return false;
+            }
 
             var addon = (AtkUnitBase*)addonPtr.Address;
             if (!addon->IsVisible)
+            {
                 return false;
+            }
 
             var addonX = addon->X;
             var addonY = addon->Y;
@@ -113,7 +122,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 case PartyListOverlayPosition.Left:
                     overlayX = vpPos.X + addonX - 310;
                     if (overlayX < vpPos.X)
+                    {
                         overlayX = vpPos.X; // Clamp to screen edge
+                    }
+
                     overlayY = vpPos.Y + addonY;
                     break;
 
@@ -126,7 +138,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                     overlayX = vpPos.X + addonX;
                     overlayY = vpPos.Y + addonY - lastFrameSize.Y - 5;
                     if (overlayY < vpPos.Y)
+                    {
                         overlayY = vpPos.Y; // Clamp to screen edge
+                    }
+
                     break;
 
                 case PartyListOverlayPosition.Below:
@@ -255,7 +270,9 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             var spec = FFLogsService.GetSpecForJob(member.JobAbbreviation);
             var resolvedIconId = FFLogsService.GetJobIconIdForSpec(spec);
             if (resolvedIconId.HasValue)
+            {
                 jobIconId = resolvedIconId.Value;
+            }
         }
 
         // ── Job icon ────────────────────────────────────────────────────────
@@ -349,16 +366,25 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                     var clearsColor = new Vector4(0.4f, 0.8f, 0.4f, 1.0f);
                     var clearsText = "Cleared";
                     if (!string.IsNullOrWhiteSpace(cachedTs.CompletionWeek))
+                    {
                         clearsText += $" ({cachedTs.CompletionWeek})";
+                    }
+
                     if (hasBestParse)
+                    {
                         clearsText += $" | Best: {cachedTs.BestPercent:F0}%";
+                    }
+
                     ImGui.TextColored(clearsColor, clearsText);
                 }
                 else if (hasProgPoint)
                 {
                     var progText = cachedTs.ProgPoint!;
                     if (!string.IsNullOrWhiteSpace(cachedTs.DisplayPercent))
+                    {
                         progText += $" ({cachedTs.DisplayPercent})";
+                    }
+
                     ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), progText);
                 }
                 else if (hasBestParse)
@@ -397,11 +423,15 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 {
                     var member = partyList[i];
                     if (member == null)
+                    {
                         continue;
+                    }
 
                     var name = member.Name.TextValue;
                     if (string.IsNullOrWhiteSpace(name))
+                    {
                         continue;
+                    }
 
                     var world = member.World.ValueNullable?.Name.ToString() ?? string.Empty;
                     var classJob = member.ClassJob.ValueNullable;
@@ -447,11 +477,15 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             {
                 var memberPtr = InfoProxyCrossRealm.GetGroupMember((uint)i, localIndex);
                 if (memberPtr == null)
+                {
                     continue;
+                }
 
                 var member = *memberPtr;
                 if (member.HomeWorld == -1 || string.IsNullOrEmpty(member.NameString))
+                {
                     continue;
+                }
 
                 var worldName = worldSheet?.GetRowOrDefault((uint)member.HomeWorld)?.Name.ToString()
                     ?? string.Empty;
@@ -510,7 +544,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     {
         var parts = new List<string>();
         foreach (var m in members)
+        {
             parts.Add($"{m.Name}@{m.World}:{m.JobAbbreviation}");
+        }
+
         parts.Sort();
         return string.Join("|", parts);
     }
@@ -523,9 +560,14 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         var allDuties = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var name in FFLogsService.GetAllSupportedDutyNames())
+        {
             allDuties.Add(name);
+        }
+
         foreach (var name in TomestoneService.GetAllSupportedDutyNames())
+        {
             allDuties.Add(name);
+        }
 
         var sorted = new List<string>(allDuties);
         sorted.Sort(StringComparer.OrdinalIgnoreCase);
@@ -542,7 +584,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     /// </summary>
     private void AutoFetchData(List<PartyMemberInfo> members, Configuration cfg)
     {
-        if (members.Count == 0) return;
+        if (members.Count == 0)
+        {
+            return;
+        }
 
         if (cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret))
         {
@@ -584,7 +629,9 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             {
                 var memberData = new List<(string Name, string World, string JobAbbreviation)>();
                 for (var i = 0; i < members.Count; i++)
+                {
                     memberData.Add((members[i].Name, members[i].World, members[i].JobAbbreviation));
+                }
 
                 Dictionary<int, EncounterParseResult> results;
                 if (encounterIds.Value.SecondaryEncounterId.HasValue)
@@ -601,12 +648,16 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 }
 
                 foreach (var (index, result) in results)
+                {
                     tempCache[index] = result;
+                }
 
                 for (var i = 0; i < members.Count; i++)
                 {
                     if (!tempCache.ContainsKey(i))
+                    {
                         tempCache[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                    }
                 }
             }
             else

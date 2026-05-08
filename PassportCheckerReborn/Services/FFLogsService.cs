@@ -57,7 +57,9 @@ public sealed class FFLogsService : IDisposable
     public async Task<bool> TestCredentialsAsync(string clientId, string clientSecret)
     {
         if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+        {
             return false;
+        }
 
         var token = await FetchTokenAsync(clientId, clientSecret);
         return token is not null;
@@ -95,7 +97,9 @@ public sealed class FFLogsService : IDisposable
             var json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("access_token", out var tokenEl))
+            {
                 return null;
+            }
 
             var token = tokenEl.GetString();
 
@@ -121,10 +125,14 @@ public sealed class FFLogsService : IDisposable
         var cfg = plugin.Configuration;
         if (string.IsNullOrWhiteSpace(cfg.FFLogsClientId) ||
             string.IsNullOrWhiteSpace(cfg.FFLogsClientSecret))
+        {
             return null;
+        }
 
         if (cachedToken is not null && DateTime.UtcNow < tokenExpiry)
+        {
             return cachedToken;
+        }
 
         return await FetchTokenAsync(cfg.FFLogsClientId, cfg.FFLogsClientSecret);
     }
@@ -141,7 +149,9 @@ public sealed class FFLogsService : IDisposable
     {
         var token = await GetTokenAsync();
         if (token is null)
+        {
             return null;
+        }
 
         try
         {
@@ -199,7 +209,10 @@ public sealed class FFLogsService : IDisposable
         }}";
 
         var json = await QueryAsync(query);
-        if (json is null) return null;
+        if (json is null)
+        {
+            return null;
+        }
 
         try
         {
@@ -207,15 +220,29 @@ public sealed class FFLogsService : IDisposable
 
             // Navigate: data.characterData.character.encounterRankings
             if (!doc.RootElement.TryGetProperty("data", out var dataEl))
+            {
                 return null;
+            }
+
             if (!dataEl.TryGetProperty("characterData", out var charDataEl))
+            {
                 return null;
+            }
+
             if (!charDataEl.TryGetProperty("character", out var charEl))
+            {
                 return null;
+            }
+
             if (charEl.ValueKind == JsonValueKind.Null)
+            {
                 return null;
+            }
+
             if (!charEl.TryGetProperty("encounterRankings", out var rankingsEl))
+            {
                 return null;
+            }
 
             // encounterRankings contains a "ranks" array; extract the best percentile
             double? bestParse = null;
@@ -228,7 +255,9 @@ public sealed class FFLogsService : IDisposable
                     {
                         var pct = pctEl.GetDouble();
                         if (bestParse is null || pct > bestParse.Value)
+                        {
                             bestParse = pct;
+                        }
                     }
                 }
             }
@@ -260,7 +289,9 @@ public sealed class FFLogsService : IDisposable
     {
         var serverInfo = GetFFLogsServer(worldName);
         if (serverInfo is null)
+        {
             return null;
+        }
 
         var (serverSlug, serverRegion) = serverInfo.Value;
         var query = $@"
@@ -274,27 +305,47 @@ public sealed class FFLogsService : IDisposable
 
         var json = await QueryAsync(query);
         if (json is null)
+        {
             return null;
+        }
 
         try
         {
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("data", out var dataEl))
+            {
                 return null;
+            }
+
             if (!dataEl.TryGetProperty("characterData", out var charDataEl))
+            {
                 return null;
+            }
+
             if (!charDataEl.TryGetProperty("character", out var charEl))
+            {
                 return null;
+            }
+
             if (charEl.ValueKind == JsonValueKind.Null)
+            {
                 return null;
+            }
+
             if (!charEl.TryGetProperty("id", out var idEl))
+            {
                 return null;
+            }
 
             if (idEl.ValueKind == JsonValueKind.Number && idEl.TryGetInt64(out var idValue))
+            {
                 return idValue;
+            }
 
             if (idEl.ValueKind == JsonValueKind.String && long.TryParse(idEl.GetString(), out var parsed))
+            {
                 return parsed;
+            }
         }
         catch (Exception ex)
         {
@@ -312,7 +363,9 @@ public sealed class FFLogsService : IDisposable
     {
         var serverInfo = GetFFLogsServer(worldName);
         if (serverInfo is null)
+        {
             return null;
+        }
 
         var (serverSlug, serverRegion) = serverInfo.Value;
         var query = $@"
@@ -325,22 +378,39 @@ public sealed class FFLogsService : IDisposable
         }}";
 
         var json = await QueryAsync(query);
-        if (json is null) return null;
+        if (json is null)
+        {
+            return null;
+        }
 
         try
         {
             using var doc = JsonDocument.Parse(json);
 
             if (!doc.RootElement.TryGetProperty("data", out var dataEl))
+            {
                 return null;
+            }
+
             if (!dataEl.TryGetProperty("characterData", out var charDataEl))
+            {
                 return null;
+            }
+
             if (!charDataEl.TryGetProperty("character", out var charEl))
+            {
                 return null;
+            }
+
             if (charEl.ValueKind == JsonValueKind.Null)
+            {
                 return null;
+            }
+
             if (!charEl.TryGetProperty("zoneRankings", out var rankingsEl))
+            {
                 return null;
+            }
 
             // Try bestPerformanceAverage first, fall back to medianPerformanceAverage
             if (rankingsEl.TryGetProperty("bestPerformanceAverage", out var bestAvgEl) &&
@@ -465,13 +535,19 @@ public sealed class FFLogsService : IDisposable
     public static int? GetZoneIdForDuty(string? dutyName)
     {
         if (string.IsNullOrWhiteSpace(dutyName))
+        {
             return null;
+        }
 
         if (DutyNameToEncounterInfo.TryGetValue(dutyName!, out var info))
+        {
             return info.ZoneId;
+        }
 
         if (MultiPartDutyToEncounterIds.TryGetValue(dutyName!, out var multiIds))
+        {
             return GetZoneIdForEncounter(multiIds.Phase1EncounterId);
+        }
 
         return null;
     }
@@ -497,10 +573,14 @@ public sealed class FFLogsService : IDisposable
     public static (int PrimaryEncounterId, int? SecondaryEncounterId)? GetEncounterIdsForDuty(string? dutyName)
     {
         if (string.IsNullOrWhiteSpace(dutyName))
+        {
             return null;
+        }
 
         if (MultiPartDutyToEncounterIds.TryGetValue(dutyName!, out var multiIds))
+        {
             return (multiIds.Phase1EncounterId, multiIds.Phase2EncounterId);
+        }
 
         return DutyNameToEncounterId.TryGetValue(dutyName!, out var id) ? (id, null) : null;
     }
@@ -514,7 +594,10 @@ public sealed class FFLogsService : IDisposable
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in DutyNameToEncounterId.Keys)
+        {
             names.Add(key);
+        }
+
         return names;
     }
 
@@ -553,7 +636,9 @@ public sealed class FFLogsService : IDisposable
         }
 
         if (queryParts.Count == 0)
+        {
             return results;
+        }
 
         var fullQuery = $"{{ characterData {{ {string.Join(" ", queryParts)} }} }}";
         var json = await QueryAsync(fullQuery);
@@ -561,7 +646,10 @@ public sealed class FFLogsService : IDisposable
         if (json is null)
         {
             foreach (var i in validIndices)
+            {
                 results[i] = new EncounterParseResult(false, true, 0, null, null, null);
+            }
+
             return results;
         }
 
@@ -576,7 +664,10 @@ public sealed class FFLogsService : IDisposable
                 PassportCheckerReborn.Log.Warning(
                     "[FFLogsService] Encounter batch response missing data/characterData.");
                 foreach (var i in validIndices)
+                {
                     results[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                }
+
                 return results;
             }
 
@@ -599,7 +690,9 @@ public sealed class FFLogsService : IDisposable
                 var totalKills = 0;
                 if (rankingsEl.TryGetProperty("totalKills", out var tkEl) &&
                     tkEl.ValueKind == JsonValueKind.Number)
+                {
                     totalKills = tkEl.GetInt32();
+                }
 
                 if (totalKills > 0)
                 {
@@ -633,7 +726,9 @@ public sealed class FFLogsService : IDisposable
                                     string.Equals(spec, currentJobSpec, StringComparison.OrdinalIgnoreCase))
                                 {
                                     if (!currentJobBestParse.HasValue || pct > currentJobBestParse.Value)
+                                    {
                                         currentJobBestParse = pct;
+                                    }
                                 }
                             }
                         }
@@ -660,14 +755,18 @@ public sealed class FFLogsService : IDisposable
             foreach (var i in validIndices)
             {
                 if (!results.ContainsKey(i))
+                {
                     results[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                }
             }
             return results;
         }
 
         // Phases 2 & 3: Get progression data for players with no kills
         if (noKillIndices.Count > 0)
+        {
             await FetchProgressionDataAsync(members, encounterId, noKillIndices, results);
+        }
 
         return results;
     }
@@ -700,9 +799,13 @@ public sealed class FFLogsService : IDisposable
             // Determine CurrentJobBestParse: take the value from whichever phase has it
             double? currentJobBestParse;
             if (phase2?.CurrentJobBestParse.HasValue == true && phase1?.CurrentJobBestParse.HasValue == true)
+            {
                 currentJobBestParse = Math.Max(phase1.CurrentJobBestParse!.Value, phase2.CurrentJobBestParse!.Value);
+            }
             else
+            {
                 currentJobBestParse = phase2?.CurrentJobBestParse ?? phase1?.CurrentJobBestParse;
+            }
 
             // BestParse for the combined result – the overall best parse (any job) from
             // the most relevant phase so DrawBestParseOnDifferentJob can display it.
@@ -743,7 +846,10 @@ public sealed class FFLogsService : IDisposable
         {
             var (name, world, _) = members[i];
             var serverInfo = GetFFLogsServer(world);
-            if (serverInfo is null) continue;
+            if (serverInfo is null)
+            {
+                continue;
+            }
 
             var (slug, region) = serverInfo.Value;
             phase2ValidIndices.Add(i);
@@ -754,7 +860,10 @@ public sealed class FFLogsService : IDisposable
         if (queryParts.Count == 0)
         {
             foreach (var i in noKillIndices)
+            {
                 results[i] = new EncounterParseResult(false, true, 0, null, null, null);
+            }
+
             return;
         }
 
@@ -766,8 +875,13 @@ public sealed class FFLogsService : IDisposable
             PassportCheckerReborn.Log.Warning(
                 "[FFLogsService] Recent reports query failed; marking no-kill players as no logs.");
             foreach (var i in noKillIndices)
+            {
                 if (!results.ContainsKey(i))
+                {
                     results[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                }
+            }
+
             return;
         }
 
@@ -783,12 +897,16 @@ public sealed class FFLogsService : IDisposable
                 {
                     if (!charDataEl.TryGetProperty($"p{i}", out var charEl) ||
                         charEl.ValueKind == JsonValueKind.Null)
+                    {
                         continue;
+                    }
 
                     if (!charEl.TryGetProperty("recentReports", out var reportsEl) ||
                         !reportsEl.TryGetProperty("data", out var dataArr) ||
                         dataArr.ValueKind != JsonValueKind.Array)
+                    {
                         continue;
+                    }
 
                     var codes = new List<string>();
                     foreach (var report in dataArr.EnumerateArray())
@@ -797,7 +915,9 @@ public sealed class FFLogsService : IDisposable
                         {
                             var code = codeEl.GetString();
                             if (!string.IsNullOrEmpty(code))
+                            {
                                 codes.Add(code!);
+                            }
                         }
                     }
 
@@ -824,7 +944,9 @@ public sealed class FFLogsService : IDisposable
         }
 
         if (playerReportCodes.Count == 0)
+        {
             return;
+        }
 
         // Phase 3: Get fight percentages from reports
         var codeToPlayers = new Dictionary<string, HashSet<int>>();
@@ -854,7 +976,9 @@ public sealed class FFLogsService : IDisposable
         }
 
         if (fightQueryParts.Count == 0)
+        {
             return;
+        }
 
         var fightQuery = $"{{ reportData {{ {string.Join(" ", fightQueryParts)} }} }}";
         var fightJson = await QueryAsync(fightQuery);
@@ -864,8 +988,13 @@ public sealed class FFLogsService : IDisposable
             PassportCheckerReborn.Log.Warning(
                 "[FFLogsService] Fight percentages query failed; marking no-kill players as no logs.");
             foreach (var (playerIdx, _) in playerReportCodes)
+            {
                 if (!results.ContainsKey(playerIdx))
+                {
                     results[playerIdx] = new EncounterParseResult(false, true, 0, null, null, null);
+                }
+            }
+
             return;
         }
 
@@ -881,11 +1010,15 @@ public sealed class FFLogsService : IDisposable
                 {
                     if (!reportDataEl.TryGetProperty(alias, out var reportEl) ||
                         reportEl.ValueKind == JsonValueKind.Null)
+                    {
                         continue;
+                    }
 
                     if (!reportEl.TryGetProperty("fights", out var fightsEl) ||
                         fightsEl.ValueKind != JsonValueKind.Array)
+                    {
                         continue;
+                    }
 
                     var playersForCode = codeToPlayers[code];
                     foreach (var fight in fightsEl.EnumerateArray())
@@ -894,7 +1027,9 @@ public sealed class FFLogsService : IDisposable
                         if (fight.TryGetProperty("kill", out var killEl) &&
                             killEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
                             killEl.GetBoolean())
+                        {
                             continue;
+                        }
 
                         if (fight.TryGetProperty("percentage", out var pctEl) &&
                             pctEl.ValueKind == JsonValueKind.Number)
@@ -904,7 +1039,9 @@ public sealed class FFLogsService : IDisposable
                             {
                                 if (!playerBestPct.TryGetValue(playerIdx, out var current) ||
                                     pct < current)
+                                {
                                     playerBestPct[playerIdx] = pct;
+                                }
                             }
                         }
                     }
@@ -946,20 +1083,33 @@ public sealed class FFLogsService : IDisposable
     public static (string ServerSlug, string ServerRegion)? GetFFLogsServer(string worldName)
     {
         if (string.IsNullOrWhiteSpace(worldName))
+        {
             return null;
+        }
 
         // FFLogs uses the world name as the slug (lowercased)
         var slug = worldName.ToLowerInvariant();
 
         // Map known worlds to their data-center region
         if (NaWorlds.Contains(worldName))
+        {
             return (slug, "NA");
+        }
+
         if (EuWorlds.Contains(worldName))
+        {
             return (slug, "EU");
+        }
+
         if (JpWorlds.Contains(worldName))
+        {
             return (slug, "JP");
+        }
+
         if (OcWorlds.Contains(worldName))
+        {
             return (slug, "OC");
+        }
 
         // Fallback: attempt NA (most common for English clients)
         return (slug, "NA");
@@ -1052,7 +1202,10 @@ public sealed class FFLogsService : IDisposable
     public static string? GetSpecForJob(string? jobAbbreviation)
     {
         if (string.IsNullOrWhiteSpace(jobAbbreviation))
+        {
             return null;
+        }
+
         return JobAbbrevToSpec.GetValueOrDefault(jobAbbreviation!);
     }
 
@@ -1063,7 +1216,10 @@ public sealed class FFLogsService : IDisposable
     public static string? GetJobAbbrevForSpec(string? spec)
     {
         if (string.IsNullOrWhiteSpace(spec))
+        {
             return null;
+        }
+
         return SpecToJobAbbrev.GetValueOrDefault(spec!);
     }
 
@@ -1073,7 +1229,10 @@ public sealed class FFLogsService : IDisposable
     public static uint? GetJobIconIdForSpec(string? spec)
     {
         if (string.IsNullOrWhiteSpace(spec))
+        {
             return null;
+        }
+
         return SpecToJobIconId.GetValueOrDefault(spec!);
     }
 

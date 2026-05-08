@@ -80,7 +80,9 @@ public sealed class PartyFinderManager : IDisposable
             for (var i = 0; i < currentMembers.Count; i++)
             {
                 if (currentMembers[i].Name.StartsWith(UnresolvedNamePrefix))
+                {
                     return true;
+                }
             }
             return false;
         }
@@ -187,6 +189,13 @@ public sealed class PartyFinderManager : IDisposable
 
     /// <summary>Cancellation source for the ongoing async name resolution batch.</summary>
     private CancellationTokenSource? resolveCts;
+
+    /// <summary>
+    /// Tracks whether a CharaCard name resolution request is currently in-flight.
+    /// Used by <see cref="ShowLogMessageDetour"/> to only suppress error messages
+    /// during active player name resolution, not at all times.
+    /// </summary>
+    private volatile bool isResolvingPlayerNames;
 
     /// <summary>Throttle interval between CharaCard requests (milliseconds).</summary>
     private const int CharaCardThrottleMs = 900;
@@ -310,7 +319,9 @@ public sealed class PartyFinderManager : IDisposable
 
         // ── Context menu (right-click → "View Recruitment") ─────────────────
         if (plugin.Configuration.RightClickPlayerNameForRecruitment3)
+        {
             RegisterContextMenu();
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -484,7 +495,9 @@ public sealed class PartyFinderManager : IDisposable
     private void OnReceiveListing(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
     {
         if (listing.ContentId == 0)
+        {
             return;
+        }
 
         var name = listing.Name.TextValue;
         var worldId = (ushort)listing.HomeWorld.RowId;
@@ -529,7 +542,9 @@ public sealed class PartyFinderManager : IDisposable
     public (string Name, string World)? ResolvePlayerFromCache(ulong contentId)
     {
         if (contentId == 0)
+        {
             return null;
+        }
 
         // Prefer the in-memory PF listing cache (always fresh from network packets).
         if (pfListingPlayerCache.TryGetValue(contentId, out var cached))
@@ -586,10 +601,12 @@ public sealed class PartyFinderManager : IDisposable
     /// request fails (e.g. player has adventure plate disabled), and signals a
     /// failed lookup via the <see cref="OnCharaCardReceived"/> event.
     /// Uses the same exclusive range (> 5854 and &lt; 5861) as OpenRadar.
+    /// Only suppresses during active player name resolution (when <see cref="isResolvingPlayerNames"/> is true).
     /// </summary>
     private unsafe void ShowLogMessageDetour(RaptureLogModule* thisPtr, uint logMessageId)
     {
-        if (logMessageId is > 5854 and < 5861)
+        // Only suppress error messages during active player name resolution
+        if (isResolvingPlayerNames && logMessageId is > 5854 and < 5861)
         {
             PassportCheckerReborn.Log.Information(
                 $"[PCR:CharaCard] ShowLogMessage suppressed (id={logMessageId}) — adventure plate hidden/unavailable, signalling private.");
@@ -614,6 +631,9 @@ public sealed class PartyFinderManager : IDisposable
 
         try
         {
+            // Set flag to enable error message suppression during this request
+            isResolvingPlayerNames = true;
+
             // Throttle between requests
             await Task.Delay(CharaCardThrottleMs, ct);
 
@@ -665,6 +685,8 @@ public sealed class PartyFinderManager : IDisposable
         }
         finally
         {
+            // Always clear the flag when the request completes or fails
+            isResolvingPlayerNames = false;
             charaCardRequestGate.Release();
         }
     }
@@ -678,7 +700,12 @@ public sealed class PartyFinderManager : IDisposable
     {
         var unresolvedCount = 0;
         for (var ui = 0; ui < currentMembers.Count; ui++)
-            if (currentMembers[ui].Name.StartsWith(UnresolvedNamePrefix)) unresolvedCount++;
+        {
+            if (currentMembers[ui].Name.StartsWith(UnresolvedNamePrefix))
+            {
+                unresolvedCount++;
+            }
+        }
 
         var resolved = false;
 
@@ -692,7 +719,9 @@ public sealed class PartyFinderManager : IDisposable
 
             var member = currentMembers[i];
             if (member.ContentId == 0 || !member.Name.StartsWith(UnresolvedNamePrefix))
+            {
                 continue;
+            }
 
             PassportCheckerReborn.Log.Information(
                 $"[PCR:Resolve] Attempting CharaCard lookup for slot {i}");
@@ -775,7 +804,9 @@ public sealed class PartyFinderManager : IDisposable
             $"[PCR:Resolve] Batch complete — resolved, final member count={currentMembers.Count}.");
 
         if (resolved)
+        {
             plugin.CidCache.Save();
+        }
     }
 
     private void OnPFDetailSetup(AddonEvent type, AddonArgs args)
@@ -798,7 +829,9 @@ public sealed class PartyFinderManager : IDisposable
 
         // Auto-show overlay when config enables it
         if (plugin.Configuration.ShowMemberInfoOverlay)
+        {
             plugin.PFWindow.IsOpen = true;
+        }
     }
 
     private void OnPFDetailRefresh(AddonEvent type, AddonArgs args)
@@ -829,7 +862,9 @@ public sealed class PartyFinderManager : IDisposable
 
         // Resume auto-refresh
         if (IsListOpen)
+        {
             StartAutoRefreshTimer();
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -865,7 +900,9 @@ public sealed class PartyFinderManager : IDisposable
     private void StartAutoRefreshTimer()
     {
         if (!plugin.Configuration.EnableAutomaticRefresh)
+        {
             return;
+        }
 
         autoRefreshCountdown = plugin.Configuration.AutoRefreshIntervalSeconds;
 
@@ -942,10 +979,14 @@ public sealed class PartyFinderManager : IDisposable
     {
         // Only add the menu item when right-clicking on a player character
         if (args.Target is not Dalamud.Game.Gui.ContextMenu.MenuTargetDefault target)
+        {
             return;
+        }
 
         if (target.TargetContentId == 0)
+        {
             return;
+        }
 
         args.AddMenuItem(new Dalamud.Game.Gui.ContextMenu.MenuItem
         {
@@ -958,7 +999,9 @@ public sealed class PartyFinderManager : IDisposable
     private unsafe void OnViewRecruitmentClicked(Dalamud.Game.Gui.ContextMenu.IMenuItemClickedArgs args)
     {
         if (args.Target is not Dalamud.Game.Gui.ContextMenu.MenuTargetDefault target)
+        {
             return;
+        }
 
         var contentId = target.TargetContentId;
 
@@ -1016,13 +1059,17 @@ public sealed class PartyFinderManager : IDisposable
     {
         var targetContentId = pendingRecruitmentContentId;
         if (targetContentId == 0)
+        {
             return;
+        }
 
         // Only attempt once per click
         pendingRecruitmentContentId = 0;
 
         if (!pfListingPlayerCache.TryGetValue(targetContentId, out var cached) || cached.ListingId == 0)
+        {
             return;
+        }
 
         var targetListingId = cached.ListingId;
 
@@ -1030,7 +1077,9 @@ public sealed class PartyFinderManager : IDisposable
         {
             var agent = AgentLookingForGroup.Instance();
             if (agent == null)
+            {
                 return;
+            }
 
             // Scan the agent's displayed listing IDs to find the target
             var listingIds = agent->Listings.ListingIds;
@@ -1056,7 +1105,9 @@ public sealed class PartyFinderManager : IDisposable
             // The addon's callback handler expects: [0] = 3 (select listing action), [1] = listing index.
             var addonPtr = PassportCheckerReborn.GameGui.GetAddonByName("LookingForGroup");
             if (addonPtr.IsNull)
+            {
                 return;
+            }
 
             var addon = (AtkUnitBase*)addonPtr.Address;
             var atkValues = stackalloc AtkValue[2];
@@ -1090,7 +1141,10 @@ public sealed class PartyFinderManager : IDisposable
         try
         {
             var addonPtr = PassportCheckerReborn.GameGui.GetAddonByName("LookingForGroupDetail", 1);
-            if (addonPtr.IsNull) return;
+            if (addonPtr.IsNull)
+            {
+                return;
+            }
 
             var addon = (AtkUnitBase*)addonPtr.Address;
             if (addon->AtkValuesCount > 15)
@@ -1130,11 +1184,15 @@ public sealed class PartyFinderManager : IDisposable
                 // Resolve the duty name from ContentFinderCondition using the RowId
                 var cfcName = GetDutyNameFromId(CurrentDutyId);
                 if (!string.IsNullOrEmpty(cfcName))
+                {
                     CurrentDutyName = cfcName;
+                }
 
                 // Also check the DutyCategory flag for HighEndDuty as a belt-and-braces check
                 if (!IsHighEndDuty && post.Category.HasFlag(AgentLookingForGroup.DutyCategory.HighEndDuty))
+                {
                     IsHighEndDuty = true;
+                }
             }
             else
             {
@@ -1156,7 +1214,9 @@ public sealed class PartyFinderManager : IDisposable
     private void DetectHighEndFromName()
     {
         if (string.IsNullOrEmpty(CurrentDutyName))
+        {
             return;
+        }
 
         var name = CurrentDutyName.ToLowerInvariant();
         IsHighEndDuty = name.Contains("savage") || name.Contains("ultimate") ||
@@ -1174,17 +1234,23 @@ public sealed class PartyFinderManager : IDisposable
         {
             var sheet = PassportCheckerReborn.DataManager.GetExcelSheet<ContentFinderCondition>();
             if (sheet == null)
+            {
                 return false;
+            }
 
             var row = sheet.GetRowOrDefault(dutyId);
             if (row == null)
+            {
                 return false;
+            }
 
             var cfc = row.Value;
 
             // HighEndDuty flag is the primary indicator
             if (cfc.HighEndDuty)
+            {
                 return true;
+            }
 
             // Also check ContentType for known high-end categories:
             // ContentType 5 = Raids, ContentType 28 = Ultimate Raids
@@ -1217,11 +1283,15 @@ public sealed class PartyFinderManager : IDisposable
         {
             var sheet = PassportCheckerReborn.DataManager.GetExcelSheet<ContentFinderCondition>();
             if (sheet == null)
+            {
                 return null;
+            }
 
             var row = sheet.GetRowOrDefault(dutyId);
             if (row == null)
+            {
                 return null;
+            }
 
             var name = row.Value.Name.ToString();
             return string.IsNullOrWhiteSpace(name) ? null : name;
@@ -1323,7 +1393,10 @@ public sealed class PartyFinderManager : IDisposable
             {
                 var contentId = post.MemberContentIds[i];
                 if (contentId == 0)
+                {
                     continue;
+                }
+
                 nonZeroSlots++;
                 if (contentId == leaderCid)
                 {
@@ -1379,7 +1452,9 @@ public sealed class PartyFinderManager : IDisposable
         foreach (var c in s)
         {
             if (!char.IsLetter(c) && c != '-' && c != '\'')
+            {
                 return false;
+            }
         }
         return true;
     }
@@ -1404,9 +1479,15 @@ public sealed class PartyFinderManager : IDisposable
     public bool IsBlacklisted(string name, string world)
     {
         if (!plugin.Configuration.EnableBlacklistFeature)
+        {
             return false;
+        }
+
         if (string.IsNullOrEmpty(name))
+        {
             return false;
+        }
+
         var result = (!string.IsNullOrEmpty(world) && blacklistedPlayers.ContainsKey($"{name}@{world}"))
                      || blacklistedPlayers.ContainsKey(name);
         //PassportCheckerReborn.Log.Debug($"[PartyFinderManager] IsBlacklisted(\"{name}\"@\"{world}\") = {result}  (cache size={blacklistedPlayers.Count})");
@@ -1421,7 +1502,9 @@ public sealed class PartyFinderManager : IDisposable
     private void SeedBlacklistFromCache()
     {
         foreach (var key in plugin.BlacklistCache.GetAllKeys())
+        {
             blacklistedPlayers[key] = true;
+        }
 
         //PassportCheckerReborn.Log.Debug($"[PartyFinderManager] Seeded {blacklistedPlayers.Count} entries from BlacklistCache.");
     }
@@ -1450,7 +1533,9 @@ public sealed class PartyFinderManager : IDisposable
             {
                 var name = names[i].ToString();
                 if (string.IsNullOrEmpty(name))
+                {
                     break;
+                }
 
                 var world = worlds[i].ToString() ?? string.Empty;
                 var key = string.IsNullOrEmpty(world) ? name : $"{name}@{world}";
@@ -1465,7 +1550,9 @@ public sealed class PartyFinderManager : IDisposable
 
         blacklistedPlayers.Clear();
         foreach (var (k, v) in newEntries)
+        {
             blacklistedPlayers[k] = v;
+        }
 
         PassportCheckerReborn.Log.Debug($"[PartyFinderManager] Blacklist cache updated: {blacklistedPlayers.Count} entr{(blacklistedPlayers.Count == 1 ? "y" : "ies")}.");
 

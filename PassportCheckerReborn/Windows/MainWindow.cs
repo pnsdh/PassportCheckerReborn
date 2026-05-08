@@ -76,7 +76,9 @@ public class MainWindow : Window, IDisposable
     public override void Draw()
     {
         if (!ImGui.BeginTabBar("##SettingsTabs"))
+        {
             return;
+        }
 
         DrawGeneralTab();
         DrawOverlayTab();
@@ -93,7 +95,9 @@ public class MainWindow : Window, IDisposable
     private void DrawGeneralTab()
     {
         if (!ImGui.BeginTabItem("General"))
+        {
             return;
+        }
 
         ImGui.Spacing();
 
@@ -206,13 +210,20 @@ public class MainWindow : Window, IDisposable
             Configuration.Save();
         }
         if (ImGui.IsItemHovered())
+        {
             ImGui.SetTooltip("When enabled, players on your in-game blacklist are marked with [BL] in the overlay.");
+        }
 
         ImGui.SameLine();
         if (ImGui.SmallButton("Refresh##bl_refresh"))
+        {
             plugin.PartyFinderManager.ForceRefreshBlacklist();
+        }
+
         if (ImGui.IsItemHovered())
+        {
             ImGui.SetTooltip("Re-reads the blacklist from the game and saves the result.");
+        }
 
         ImGui.Spacing();
         ImGui.EndTabItem();
@@ -224,7 +235,9 @@ public class MainWindow : Window, IDisposable
     private void DrawOverlayTab()
     {
         if (!ImGui.BeginTabItem("Overlay"))
+        {
             return;
+        }
 
         ImGui.Spacing();
 
@@ -260,7 +273,9 @@ public class MainWindow : Window, IDisposable
             Configuration.Save();
         }
         if (ImGui.IsItemHovered())
+        {
             ImGui.SetTooltip("When enabled, displays the actual player name (Name@World) once resolved, instead of \"Player X\".");
+        }
 
         var fflogsOverlay = Configuration.EnableFFLogsIntegrationOverlay;
         if (ImGui.Checkbox(
@@ -341,7 +356,9 @@ public class MainWindow : Window, IDisposable
     private void DrawFFLogsTab()
     {
         if (!ImGui.BeginTabItem("FFLogs Integration"))
+        {
             return;
+        }
 
         ImGui.Spacing();
         ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "FFLogs API Configuration");
@@ -369,7 +386,10 @@ public class MainWindow : Window, IDisposable
 
         // Capture state before the button so BeginDisabled/EndDisabled are always balanced.
         var wasTestInProgress = fFlogsTestInProgress;
-        if (wasTestInProgress) ImGui.BeginDisabled();
+        if (wasTestInProgress)
+        {
+            ImGui.BeginDisabled();
+        }
 
         if (ImGui.Button("Save & Test Credentials"))
         {
@@ -458,7 +478,9 @@ public class MainWindow : Window, IDisposable
     private void DrawTomestoneTab()
     {
         if (!ImGui.BeginTabItem("Tomestone Integration"))
+        {
             return;
+        }
 
         ImGui.Spacing();
         ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Tomestone API Configuration");
@@ -524,7 +546,9 @@ public class MainWindow : Window, IDisposable
     private void DrawAboutTab()
     {
         if (!ImGui.BeginTabItem("About"))
+        {
             return;
+        }
 
         ImGui.Spacing();
 
@@ -576,7 +600,9 @@ public class MainWindow : Window, IDisposable
             plugin.PartyFinderManager.ForceRefreshBlacklist();
         }
         if (ImGui.IsItemHovered())
+        {
             ImGui.SetTooltip("Clears the persisted blacklist cache, then re-reads from the game.");
+        }
 
         ImGui.Spacing();
         ImGui.EndTabItem();
@@ -609,7 +635,9 @@ public class MainWindow : Window, IDisposable
     private static void OpenUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
+        {
             return;
+        }
 
         try
         {
@@ -624,8 +652,14 @@ public class MainWindow : Window, IDisposable
     // Minimal scope wrapper so we can use `using var` without bringing in Raii
     private sealed class ImGuiDisabledScope : IDisposable
     {
-        public ImGuiDisabledScope(bool disabled) { if (disabled) ImGui.BeginDisabled(); this.disabled = disabled; }
+        public ImGuiDisabledScope(bool disabled) { if (disabled) { ImGui.BeginDisabled(); } this.disabled = disabled; }
         private readonly bool disabled;
-        public void Dispose() { if (disabled) ImGui.EndDisabled(); }
+        public void Dispose()
+        {
+            if (disabled)
+            {
+                ImGui.EndDisabled();
+            }
+        }
     }
 }

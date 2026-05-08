@@ -71,7 +71,9 @@ public sealed class CidCache : IDisposable
     public void Set(ulong contentId, string name, ushort worldId, string worldName)
     {
         if (contentId == 0 || string.IsNullOrEmpty(name))
+        {
             return;
+        }
 
         entries[contentId] = new CidCacheEntry(name, worldId, worldName, DateTime.UtcNow);
         dirty = true;
@@ -83,7 +85,9 @@ public sealed class CidCache : IDisposable
     public void Save()
     {
         if (!dirty)
+        {
             return;
+        }
 
         try
         {
@@ -91,7 +95,9 @@ public sealed class CidCache : IDisposable
             // with the Content ID rendered as a decimal string.
             var serialisable = new Dictionary<string, CidCacheEntry>(entries.Count);
             foreach (var (id, entry) in entries)
+            {
                 serialisable[id.ToString()] = entry;
+            }
 
             var json = System.Text.Json.JsonSerializer.Serialize(serialisable, JsonOptions);
             File.WriteAllText(filePath, json);
@@ -116,17 +122,23 @@ public sealed class CidCache : IDisposable
         try
         {
             if (!File.Exists(filePath))
+            {
                 return;
+            }
 
             var json = File.ReadAllText(filePath);
             var deserialised = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, CidCacheEntry>>(json, JsonOptions);
             if (deserialised == null)
+            {
                 return;
+            }
 
             foreach (var (key, entry) in deserialised)
             {
                 if (ulong.TryParse(key, out var contentId) && contentId != 0)
+                {
                     entries[contentId] = entry;
+                }
             }
 
             PassportCheckerReborn.Log.Debug($"[CidCache] Loaded {entries.Count} entries from disk.");
