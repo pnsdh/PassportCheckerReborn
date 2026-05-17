@@ -461,7 +461,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     {
         if (cachedTs == null)
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
             return;
         }
 
@@ -499,7 +499,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         }
         else
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
         }
     }
 
@@ -542,7 +542,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                         plugin.CidCache.Set(contentId, name, (ushort)worldId, world);
                     }
 
-                    result.Add(new PartyMemberInfo(name, world, jobAbbreviation, contentId));
+                    result.Add(new PartyMemberInfo(name, world, jobAbbreviation, contentId, false, (ushort)worldId));
                 }
 
                 return result;
@@ -604,7 +604,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                     plugin.CidCache.Set(contentId, member.NameString, (ushort)member.HomeWorld, worldName);
                 }
 
-                result.Add(new PartyMemberInfo(member.NameString, worldName, jobAbbreviation, contentId));
+                result.Add(new PartyMemberInfo(member.NameString, worldName, jobAbbreviation, contentId, false, (ushort)member.HomeWorld));
             }
         }
         catch (Exception)
