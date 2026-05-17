@@ -478,12 +478,12 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                         }
                         else
                         {
-                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
+                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
                         }
                     }
                     else
                     {
-                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No data");
+                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
                     }
                 }
             }
@@ -962,4 +962,5 @@ public record PartyMemberInfo(
     string World,
     string JobAbbreviation,
     ulong ContentId = 0,
-    bool IsPrivate = false);
+    bool IsPrivate = false,
+    ushort WorldId = 0);

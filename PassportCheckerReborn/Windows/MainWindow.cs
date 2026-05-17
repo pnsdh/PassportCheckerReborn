@@ -558,7 +558,6 @@ public class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("An open-source Party Finder enhancement plugin for Final Fantasy XIV.");
         ImGui.Spacing();
 
-        ImGui.TextUnformatted($"Version: {PassportCheckerReborn.Version}");
         ImGui.TextUnformatted("Author:  The Combat Reborn Team - LTS");
         ImGui.Spacing();
         ImGui.Separator();
@@ -567,16 +566,8 @@ public class MainWindow : Window, IDisposable
         ImGui.TextWrapped(
             "Passport Checker Reborn is an open-source alternative to the PFFinder plugin. " +
             "It shows a member-info overlay alongside party finder listings, integrates with " +
-            "Tomestone.gg for quick prog-point lookups, and offers quality-of-life improvements " +
+            "Tomestone.gg and FFLogs for quick prog-point lookups, and offers quality-of-life improvements " +
             "to the party finder UI.");
-
-        ImGui.Spacing();
-
-        ImGui.TextWrapped("Source code: https://github.com/FFXIV-CombatReborn/PassportCheckerReborn");
-        ImGui.Spacing();
-
-        ImGui.TextWrapped("Tomestone.gg integration inspired by the TomestoneGG Dalamud plugin.");
-        ImGui.TextWrapped("Source: https://github.com/TomestoneGG/Dalamud.Tomestone");
 
         ImGui.Spacing();
         ImGui.Separator();

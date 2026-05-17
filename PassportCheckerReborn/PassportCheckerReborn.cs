@@ -49,6 +49,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     internal CidCache CidCache { get; private set; } = null!;
     internal BlacklistCache BlacklistCache { get; private set; } = null!;
     internal PartyFinderManager PartyFinderManager { get; private set; } = null!;
+    internal PartyListMonitorService PartyListMonitorService { get; private set; } = null!;
 
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
@@ -58,6 +59,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         FFLogsService = new FFLogsService(this);
         CidCache = new CidCache();
         BlacklistCache = new BlacklistCache();
+        PartyListMonitorService = new PartyListMonitorService(this);
 
         // Hook registration and addon event subscriptions must run on the main thread.
         await Framework.RunOnFrameworkThread(() =>
@@ -86,6 +88,9 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
                 HelpMessage = "Toggle the Party List Overlay on or off."
             });
 
+            // Register framework update for party list monitoring
+            Framework.Update += PartyListMonitorService.OnFrameworkUpdate;
+
             PluginInterface.UiBuilder.Draw += ManageWindowStates;
             PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
@@ -99,6 +104,9 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         // Hook teardown and UI deregistration must run on the main thread.
         await Framework.RunOnFrameworkThread(() =>
         {
+            // Unregister framework update for party list monitoring
+            Framework.Update -= PartyListMonitorService.OnFrameworkUpdate;
+
             PluginInterface.UiBuilder.Draw -= ManageWindowStates;
             PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
@@ -118,6 +126,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
 
         PFWindowManager.Disable();
 
+        PartyListMonitorService?.Dispose();
         CidCache?.Dispose();
         BlacklistCache?.Dispose();
         TomestoneService?.Dispose();
