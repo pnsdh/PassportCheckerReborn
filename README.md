@@ -8,15 +8,17 @@
 
 An open-source Party Finder enhancement plugin for Final Fantasy XIV, built on the [Dalamud](https://github.com/goatcorp/Dalamud) plugin framework. Passport Checker Reborn shows a member-info overlay alongside Party Finder listings and integrates with [FFLogs](https://www.fflogs.com/) and [Tomestone.gg](https://tomestone.gg/) for quick player lookup.
 
+> **Note:** This is a customized fork — **Passport Checker Reborn (Custom)** — adapted for the **Korean server** (Korean world-name → FFLogs slug mapping, Korean/English UI, PlayerTrack-based name recovery). It is not affiliated with the upstream project and is distributed only as a test build. Tomestone.gg has no Korean data, so its features are disabled on the KR client.
+
 ## Features
 
 ### Party Finder Overlay
 - **Member Info Overlay** — automatically opens alongside the PF detail pane showing party members' names, jobs, and icons.
-- **FFLogs Integration** — on-demand lookup of per-job parse percentiles with colour-coded results (grey → green → blue → purple → orange).
-- **Tomestone.gg Integration** — on-demand prog-point and clear data for the current duty from the Tomestone API.
+- **FFLogs Integration** — on-demand lookup of per-job parse percentiles with colour-coded results (grey → green → blue → purple → orange), no-kill progression (last phase + boss %), and cross-expansion Ultimate clear aggregation.
+- **Tomestone.gg Integration** — on-demand prog-point and clear data for the current duty from the Tomestone API (Global client only).
+- **PlayerTrack Name Resolution** — recovers the names of players who hide their adventure plate (shown as `[Private]`) by reading the [PlayerTrack](https://github.com/kalilistic/PlayerTrack) plugin's local database (read-only). Resolved names are cached and marked with a `[PT]` tag.
 - **Overlay Positioning** — attach the overlay to the left or right side of the PF detail window.
-- **High-End Duty Filter** — optionally limit the overlay to Savage, Ultimate, Extreme, Criterion, and Unreal duties.
-- **Special Border for Known Players** — highlight party members you know with a configurable coloured border.
+- **High-End Duty Filter** — optionally limit the overlay to Savage, Ultimate, Extreme, Criterion, Chaotic, and Unreal duties.
 - **Party Job Icons** — display in-game job icons next to each member, with a text fallback.
 
 ### Party List Overlay
@@ -33,7 +35,8 @@ An open-source Party Finder enhancement plugin for Final Fantasy XIV, built on t
 
 | Command | Description |
 |---|---|
-| `/pfchecker` | Toggle the main plugin window |
+| `/pfchecker` (or `/pcr`) | Open the settings window |
+| `/pcrparty` | Toggle the party list overlay window |
 
 ## Installation
 
@@ -48,13 +51,13 @@ https://raw.githubusercontent.com/FFXIV-CombatReborn/CombatRebornRepo/main/plugi
 
 ## Configuration
 
-Open settings with `/pfcheckersettings` or via the Dalamud plugin installer.
+Open settings with `/pfchecker` (or `/pcr`) or via the Dalamud plugin installer.
 
 ### General Tab
-Configure Party Finder detail and list enhancements. Some settings are placeholders for future features and are shown as disabled in the UI.
+Configure Party Finder detail and list enhancements (job icons, keeping the PF window open on party changes, auto-refresh).
 
 ### Overlay Tab
-Toggle the member info overlay, high-end duty filter, overlay side, and FFLogs/Tomestone integrations. Configure the party list overlay position and auto-hide behaviour.
+Toggle the member info overlay, high-end duty filter, overlay side, and FFLogs/Tomestone integrations. Configure the party list overlay position and auto-hide behaviour, plus name-freshness re-verification.
 
 ### FFLogs Integration Tab
 Enter your FFLogs API Client ID and Client Secret, then click **Save & Test Credentials** to verify.
@@ -81,6 +84,9 @@ Enter your Tomestone API key (Bearer token) and click **Save**.
 3. Click **Generate access token**.
 4. Copy the token into the plugin settings.
 </details>
+
+### PlayerTrack Tab
+Enable reading the [PlayerTrack](https://github.com/kalilistic/PlayerTrack) database (read-only) to recover names of players who hide their adventure plate, and choose whether to try the live adventure plate or PlayerTrack first. The tab shows PlayerTrack's install/load status.
 
 ## Building from Source
 

@@ -1,3 +1,4 @@
+using Dalamud.Game;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -5,6 +6,7 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
+using Lumina.Excel.Sheets;
 using PassportCheckerReborn.Services;
 using PassportCheckerReborn.Windows;
 using System.Threading;
@@ -31,7 +33,14 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
-    internal const string Version = "0.1.0";
+    internal const string Version = "7.5.1.0";
+
+    /// <summary>
+    /// Whether the game is the Korean client. Dalamud's <see cref="ClientLanguage"/> enum has no
+    /// Korean entry, so this is detected from game data (see <see cref="DetectKoreanClient"/>).
+    /// Tomestone.gg has no Korean data, so its features are disabled when this is true.
+    /// </summary>
+    public static bool IsKoreanClient { get; private set; }
 
     private const string CommandName = "/pfchecker";
     public const string ALTCOMMAND = "/pcr";
@@ -48,22 +57,30 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     internal FFLogsService FFLogsService { get; private set; } = null!;
     internal CidCache CidCache { get; private set; } = null!;
     internal BlacklistCache BlacklistCache { get; private set; } = null!;
+    internal PlayerTrackService PlayerTrackService { get; private set; } = null!;
     internal PartyFinderManager PartyFinderManager { get; private set; } = null!;
     internal PartyListMonitorService PartyListMonitorService { get; private set; } = null!;
 
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Loc.Language = Configuration.Language;  // early; re-applied after client detection below
 
         TomestoneService = new TomestoneService(this);
         FFLogsService = new FFLogsService(this);
         CidCache = new CidCache();
         BlacklistCache = new BlacklistCache();
+        PlayerTrackService = new PlayerTrackService();
         PartyListMonitorService = new PartyListMonitorService(this);
 
         // Hook registration and addon event subscriptions must run on the main thread.
         await Framework.RunOnFrameworkThread(() =>
         {
+            // Detect the client and apply first-launch language / KR defaults (needs game data).
+            IsKoreanClient = DetectKoreanClient();
+            ApplyClientLanguageDefaults();
+            Loc.Language = Configuration.Language;
+
             PartyFinderManager = new PartyFinderManager(this);
             PFWindowManager.Enable(this, PartyFinderManager);
 
@@ -129,6 +146,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         PartyListMonitorService?.Dispose();
         CidCache?.Dispose();
         BlacklistCache?.Dispose();
+        PlayerTrackService?.Dispose();
         TomestoneService?.Dispose();
         FFLogsService?.Dispose();
     }
@@ -142,11 +160,92 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     {
         Configuration.ShowPartyListOverlay = !Configuration.ShowPartyListOverlay;
         Configuration.Save();
-        ChatGui.Print($"[PassportChecker] Party List Overlay {(Configuration.ShowPartyListOverlay ? "shown" : "hidden")}.");
+        ChatGui.Print($"[PassportChecker] {Loc.T(Configuration.ShowPartyListOverlay ? "Party List Overlay shown" : "Party List Overlay hidden")}.");
     }
 
     public void ToggleMainUi() => MainWindow.Toggle();
     public void ToggleOverlay() => PFWindow.Toggle();
+
+    /// <summary>
+    /// Auto-detects the UI language from the client on first launch, and always keeps Tomestone
+    /// disabled on the Korean client (Tomestone.gg has no Korean data).
+    /// </summary>
+    private void ApplyClientLanguageDefaults()
+    {
+        var changed = false;
+
+        if (!Configuration.LanguageAutoDetected)
+        {
+            Configuration.Language = IsKoreanClient ? PluginLanguage.Korean : PluginLanguage.English;
+            Configuration.LanguageAutoDetected = true;
+            changed = true;
+        }
+
+        if (IsKoreanClient && Configuration.EnableTomestoneIntegration)
+        {
+            Configuration.EnableTomestoneIntegration = false;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            Configuration.Save();
+        }
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when running on the Korean client. Dalamud's <see cref="ClientLanguage"/>
+    /// enum has no Korean value, so we detect it from game data: on the KR client the "English"
+    /// Excel sheet actually returns Korean text, so Hangul in the English ContentFinderCondition
+    /// names means this is the KR client.
+    /// </summary>
+    private static bool DetectKoreanClient()
+    {
+        try
+        {
+            var sheet = DataManager.GetExcelSheet<ContentFinderCondition>(ClientLanguage.English);
+            var sampled = 0;
+            foreach (var row in sheet)
+            {
+                var name = row.Name.ToString();
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                if (ContainsHangul(name))
+                {
+                    return true;
+                }
+
+                if (++sampled >= 40)
+                {
+                    break;
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Log.Warning(ex, "[PassportCheckerReborn] Failed to detect client language.");
+        }
+
+        return false;
+    }
+
+    private static bool ContainsHangul(string text)
+    {
+        foreach (var c in text)
+        {
+            if ((c >= '가' && c <= '힣')   // Hangul syllables
+                || (c >= 'ᄀ' && c <= 'ᇿ') // Hangul Jamo
+                || (c >= '㄰' && c <= '㆏')) // Hangul compatibility Jamo
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Runs every frame before WindowSystem.Draw to manage auto-open/close

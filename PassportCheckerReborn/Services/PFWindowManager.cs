@@ -27,6 +27,16 @@ namespace PassportCheckerReborn.Services
         {
             // Dispose hooks
             DisposeCloseHooks();
+
+            // Remove the deferred-sync handler: it is a *static* method, so if a game-triggered close armed
+            // it just before teardown it would otherwise stay subscribed to Dalamud's Framework.Update and
+            // fire after the plugin is gone, dereferencing the now-disposed PartyFinderManager. Also clear the
+            // static references and counters so nothing stale survives into the next Enable() on reload.
+            PassportCheckerReborn.Framework.Update -= OnDeferredPartyCountSync;
+            Plugin = null;
+            PartyFinderManager = null;
+            TrackedPartyMemberCount = 0;
+            SuppressionObservedCount = 0;
         }
 
         private static unsafe void InitializeCloseHooks()
@@ -92,7 +102,9 @@ namespace PassportCheckerReborn.Services
 
         private static unsafe bool CloseAddonDetour(AtkUnitBase* unitBase, bool a1)
         {
-            if (Player.Available)
+            // Guard the native pointer: an AV from dereferencing a null AtkUnitBase* is not catchable by the
+            // try/catch below and would crash the game, so bail to a straight pass-through instead.
+            if (unitBase != null && Player.Available)
             {
                 try
                 {
@@ -109,7 +121,7 @@ namespace PassportCheckerReborn.Services
                         // Clean up any pending deferred sync callbacks
                         PassportCheckerReborn.Framework.Update -= OnDeferredPartyCountSync;
 
-                        PassportCheckerReborn.Log.Information(
+                        PassportCheckerReborn.Log.Debug(
                             $"[PFWindowManager] User-initiated close on {addonName} " +
                             $"(synced trackedCount to {currentCount}).");
 
@@ -120,7 +132,7 @@ namespace PassportCheckerReborn.Services
                     if (a1 == true && (addonName == "LookingForGroupDetail" || addonName == "LookingForGroup"))
                     {
                         var currentCount = PartyFinderManager.GetEffectivePartyCount();
-                        PassportCheckerReborn.Log.Information(
+                        PassportCheckerReborn.Log.Debug(
                             $"[PFWindowManager] Close called on {addonName} " +
                             $"(a1={a1}, config={Plugin?.Configuration.PreventAutoClosingOnPartyChanges2}, " +
                             $"detailOpen={PartyFinderManager?.IsDetailOpen}, listOpen={PartyFinderManager?.IsListOpen}, " +
@@ -143,7 +155,7 @@ namespace PassportCheckerReborn.Services
                                 PassportCheckerReborn.Framework.Update -= OnDeferredPartyCountSync;
                                 PassportCheckerReborn.Framework.Update += OnDeferredPartyCountSync;
 
-                                PassportCheckerReborn.Log.Information(
+                                PassportCheckerReborn.Log.Debug(
                                     $"[PFWindowManager] SUPPRESSING close for {addonName} " +
                                     $"(party: {TrackedPartyMemberCount} → {currentCount}).");
                                 return false;
@@ -157,16 +169,16 @@ namespace PassportCheckerReborn.Services
                                 PassportCheckerReborn.Framework.Update -= OnDeferredPartyCountSync;
                             }
 
-                            PassportCheckerReborn.Log.Information($"[PFWindowManager] Allowing close for {addonName} (currentCount={currentCount}, tracked={TrackedPartyMemberCount}).");
+                            PassportCheckerReborn.Log.Debug($"[PFWindowManager] Allowing close for {addonName} (currentCount={currentCount}, tracked={TrackedPartyMemberCount}).");
                             TrackedPartyMemberCount = currentCount;
                             return CloseAddonHook!.Original(unitBase, a1);
                         }
                     }
 
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    
+                    PassportCheckerReborn.Log.Warning(ex, "[PFWindowManager] Exception in CloseAddon detour; passing through.");
                 }
             }
 

@@ -40,6 +40,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
 
     // Duty selection for encounter-specific lookups
     private string[] dutyNames = [];
+    private string[] dutyKeys = [];
     private int selectedDutyIndex;
     private string? selectedDutyName;
     private bool dutyListInitialized;
@@ -193,7 +194,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 IsOpen = false;
                 return;
             }
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Waiting for party data\u2026");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Waiting for party data\u2026"));
             return;
         }
 
@@ -217,15 +218,21 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             AutoFetchData(partyMembers, cfg);
         }
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), "Party Member Info");
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), Loc.T("Party Member Info"));
         ImGui.SameLine();
-        if (ImGui.SmallButton("Hide"))
+        if (ImGui.SmallButton(Loc.T("Hide")))
         {
             cfg.ShowPartyListOverlay = false;
             cfg.Save();
             IsOpen = false;
             return;
         }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("Hide this party-list overlay. Re-enable it in Settings → Overlay → Party List Overlay."));
+        }
+
         ImGui.Separator();
         ImGui.Spacing();
 
@@ -236,10 +243,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         {
             ImGui.Spacing();
             var loadingText = fflogsBatchInProgress && tomestoneBatchInProgress
-                ? "Loading FFLogs & Tomestone data\u2026"
+                ? Loc.T("Loading FFLogs & Tomestone data\u2026")
                 : fflogsBatchInProgress
-                    ? "Loading FFLogs data\u2026"
-                    : "Loading Tomestone data\u2026";
+                    ? Loc.T("Loading FFLogs data\u2026")
+                    : Loc.T("Loading Tomestone data\u2026");
             ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), loadingText);
         }
 
@@ -250,12 +257,15 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             ImGui.Separator();
             ImGui.Spacing();
 
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), "Duty:");
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), Loc.T("Duty:"));
             ImGui.SameLine();
             ImGui.SetNextItemWidth(250f);
             if (ImGui.Combo("##party_duty_select", ref selectedDutyIndex, dutyNames, dutyNames.Length))
             {
-                selectedDutyName = selectedDutyIndex > 0 ? dutyNames[selectedDutyIndex] : null;
+                // dutyKeys holds the internal English name for the selected display label.
+                selectedDutyName = selectedDutyIndex > 0 && selectedDutyIndex < dutyKeys.Length
+                    ? dutyKeys[selectedDutyIndex]
+                    : null;
                 // Re-fetch data with new duty selection
                 fflogsCache = [];
                 tomestoneCache = [];
@@ -303,9 +313,9 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         // Setup columns
         if (cfg.ShowPartyJobIcons)
         {
-            ImGui.TableSetupColumn("Job", ImGuiTableColumnFlags.WidthFixed, 30f);
+            ImGui.TableSetupColumn(Loc.T("Job"), ImGuiTableColumnFlags.WidthFixed, 30f);
         }
-        ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed);
+        ImGui.TableSetupColumn(Loc.T("Name"), ImGuiTableColumnFlags.WidthFixed);
         if (cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey))
         {
             ImGui.TableSetupColumn("Tomestone", ImGuiTableColumnFlags.WidthFixed);
@@ -384,7 +394,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             }
             else
             {
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Loading...");
+                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Loading..."));
             }
         }
 
@@ -394,80 +404,28 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             ImGui.TableNextColumn();
             if (fflogsCache.TryGetValue(index, out var cachedFf))
             {
-                DrawFFLogsCell(cachedFf, member);
+                PFWindow.DrawFFLogsCellContent(cachedFf, member);
             }
             else
             {
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Loading...");
+                ImGui.TextColored(PFWindow.NoDataColor, Loc.T("Loading..."));
             }
         }
 
         ImGui.PopID();
     }
 
-    private static void DrawFFLogsCell(EncounterParseResult? cachedFf, PartyMemberInfo member)
-    {
-        if (cachedFf is null || !cachedFf.HasData)
-        {
-            if (cachedFf?.AverageParsePercent.HasValue == true)
-            {
-                var avgColor = PFWindow.GetParseColor(cachedFf.AverageParsePercent.Value);
-                ImGui.TextColored(avgColor, $"Avg: {cachedFf.AverageParsePercent.Value:F0}%");
-            }
-            else
-            {
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
-            }
-            return;
-        }
-
-        if (cachedFf.BestParse.HasValue)
-        {
-            // Show best parse for current job
-            if (cachedFf.CurrentJobBestParse.HasValue)
-            {
-                var color = PFWindow.GetParseColor(cachedFf.CurrentJobBestParse.Value);
-                ImGui.TextColored(color, $"{cachedFf.CurrentJobBestParse.Value:F0}%");
-            }
-            else
-            {
-                var color = PFWindow.GetParseColor(cachedFf.BestParse.Value);
-                ImGui.TextColored(color, $"{cachedFf.BestParse.Value:F0}%");
-            }
-
-            // If best parse is on a different job, show it on a new line
-            if (cachedFf.BestParseJobAbbreviation != null &&
-                !string.Equals(cachedFf.BestParseJobAbbreviation, member.JobAbbreviation,
-                    StringComparison.OrdinalIgnoreCase) &&
-                (!cachedFf.CurrentJobBestParse.HasValue ||
-                 cachedFf.BestParse.Value > cachedFf.CurrentJobBestParse.Value))
-            {
-                var bestColor = PFWindow.GetParseColor(cachedFf.BestParse.Value);
-                ImGui.TextColored(bestColor, $"({cachedFf.BestParseJobAbbreviation}: {cachedFf.BestParse.Value:F0}%)");
-            }
-        }
-        else if (cachedFf.AverageParsePercent.HasValue)
-        {
-            var avgColor = PFWindow.GetParseColor(cachedFf.AverageParsePercent.Value);
-            ImGui.TextColored(avgColor, $"Avg: {cachedFf.AverageParsePercent.Value:F0}%");
-        }
-        else
-        {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
-        }
-    }
-
     private static void DrawTomestoneCell(TomestoneCharacterInfo? cachedTs)
     {
         if (cachedTs == null)
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
             return;
         }
 
         if (cachedTs.NoLogs)
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No Logs");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("No Logs"));
             return;
         }
 
@@ -487,7 +445,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
 
             if (hasBestParse)
             {
-                ImGui.TextColored(clearsColor, $"Best: {cachedTs.BestPercent:F0}%");
+                ImGui.TextColored(clearsColor, $"Best: {cachedTs.BestPercent:F1}%");
             }
         }
         else if (hasProgPoint)
@@ -501,11 +459,11 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
         }
         else if (hasBestParse)
         {
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"Best: {cachedTs.BestPercent:F0}%");
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"Best: {cachedTs.BestPercent:F1}%");
         }
         else
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
         }
     }
 
@@ -675,22 +633,46 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     /// </summary>
     private void InitializeDutyList()
     {
-        var allDuties = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Each option: internal Key = English duty name (used for FFLogs/Tomestone lookups),
+        // display Label = the game's localised name resolved from the DutyId (Korean on KR, etc.).
+        var options = new List<(string Label, string Key)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var name in FFLogsService.GetAllSupportedDutyNames())
+        foreach (var (dutyId, name) in FFLogsService.GetSupportedDuties())
         {
-            allDuties.Add(name);
+            if (!seen.Add(name))
+            {
+                continue;
+            }
+
+            var localized = PartyFinderManager.GetDutyNameFromId(dutyId);
+            options.Add((string.IsNullOrWhiteSpace(localized) ? name : localized, name));
         }
 
-        foreach (var name in TomestoneService.GetAllSupportedDutyNames())
+        // Tomestone duties have no DutyId in our data, so they fall back to their English name.
+        // Skip them entirely on the KR client, where Tomestone is unavailable.
+        if (!PassportCheckerReborn.IsKoreanClient)
         {
-            allDuties.Add(name);
+            foreach (var name in TomestoneService.GetAllSupportedDutyNames())
+            {
+                if (seen.Add(name))
+                {
+                    options.Add((name, name));
+                }
+            }
         }
 
-        var sorted = new List<string>(allDuties);
-        sorted.Sort(StringComparer.OrdinalIgnoreCase);
-        sorted.Insert(0, "(None)");
-        dutyNames = [.. sorted];
+        options.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        options.Insert(0, (Loc.T("(None)"), string.Empty));
+
+        dutyNames = new string[options.Count];
+        dutyKeys = new string[options.Count];
+        for (var i = 0; i < options.Count; i++)
+        {
+            dutyNames[i] = options[i].Label;
+            dutyKeys[i] = options[i].Key;
+        }
+
         selectedDutyIndex = 0;
         selectedDutyName = null;
     }
@@ -759,19 +741,9 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                     memberData.Add((members[i].Name, members[i].World, members[i].JobAbbreviation));
                 }
 
-                Dictionary<int, EncounterParseResult> results;
-                if (encounterIds.Value.SecondaryEncounterId.HasValue)
-                {
-                    results = await plugin.FFLogsService.GetMultiEncounterDataForAllAsync(
-                        memberData,
-                        encounterIds.Value.PrimaryEncounterId,
-                        encounterIds.Value.SecondaryEncounterId.Value);
-                }
-                else
-                {
-                    results = await plugin.FFLogsService.GetEncounterDataForAllAsync(
-                        memberData, encounterIds.Value.PrimaryEncounterId);
-                }
+                // Aggregates P1/P2 and, for Ultimates, kills/parses across every expansion's listing.
+                var results = await plugin.FFLogsService.GetDutyEncounterDataForAllAsync(
+                    memberData, dutyId, dutyName);
 
                 foreach (var (index, result) in results)
                 {
@@ -782,30 +754,25 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 {
                     if (!tempCache.ContainsKey(i))
                     {
-                        tempCache[i] = new EncounterParseResult(false, true, 0, null, null, null);
+                        tempCache[i] = new EncounterParseResult(false, true, 0, null, null);
                     }
                 }
             }
             else
             {
-                // Fallback: general zone parse
+                // Fallback: batched general zone parse in one request.
+                var memberData = new List<(string Name, string World, string JobAbbreviation)>();
                 for (var i = 0; i < members.Count; i++)
                 {
-                    var member = members[i];
-                    try
-                    {
-                        var avg = await plugin.FFLogsService.GetBestPerfAvgAsync(
-                            member.Name, member.World);
-                        tempCache[i] = avg.HasValue
-                            ? new EncounterParseResult(true, false, 0, avg.Value, null, null)
-                            : new EncounterParseResult(false, false, 0, null, null, null);
-                    }
-                    catch (Exception ex)
-                    {
-                        PassportCheckerReborn.Log.Warning(ex,
-                            $"[PartyListWindow] FFLogs lookup failed for {member.Name}@{member.World}");
-                        tempCache[i] = null;
-                    }
+                    memberData.Add((members[i].Name, members[i].World, members[i].JobAbbreviation));
+                }
+
+                var averages = await plugin.FFLogsService.GetZoneAveragesForAllAsync(memberData);
+                for (var i = 0; i < members.Count; i++)
+                {
+                    tempCache[i] = averages.TryGetValue(i, out var r)
+                        ? r
+                        : new EncounterParseResult(false, false, 0, null, null);
                 }
             }
 

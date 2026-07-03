@@ -3,6 +3,7 @@ using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using PassportCheckerReborn.Services;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
@@ -26,18 +27,26 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     private readonly PassportCheckerReborn plugin = plugin;
 
     // Per-member FFLogs encounter cache (index → result)
-    private Dictionary<int, EncounterParseResult?> fflogsEncounterCache = [];
+    // ConcurrentDictionary: the FFLogs batch task writes entries from a background thread (progressively, as
+    // each member resolves) while the UI thread reads them each frame.
+    private ConcurrentDictionary<int, EncounterParseResult?> fflogsEncounterCache = new();
     private bool fflogsBatchInProgress;
 
     // Per-member Tomestone info cache (index → character info)
-    private Dictionary<int, TomestoneCharacterInfo?> tomestoneInfoCache = [];
+    // ConcurrentDictionary: written by the background Tomestone batch task, read on the UI thread each frame.
+    private ConcurrentDictionary<int, TomestoneCharacterInfo?> tomestoneInfoCache = new();
     private bool tomestoneBatchInProgress;
 
     // Tracks the PartyFinderManager generation so we can clear caches on new detail open
     private int lastDetailGeneration = -1;
 
-    // Tracks whether FFLogs data has been fetched (user clicked button) for this generation
+    // "loaded (or loading) successfully" — gates the FFLogs button's disabled state. Reset to false on a
+    // failed lookup so the button re-enables for a manual retry.
     private bool fflogsFetched;
+
+    // "a fetch was kicked off for this listing" — gates the ONE-TIME auto-fetch so a failed lookup (which
+    // clears fflogsFetched) can't make auto-fetch loop and hammer the API. Only reset on a new listing.
+    private bool fflogsFetchInitiated;
 
     // Tracks whether Tomestone data has been fetched (user clicked button) for this generation
     private bool tomestoneFetched;
@@ -122,9 +131,10 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         if (gen != lastDetailGeneration)
         {
             lastDetailGeneration = gen;
-            fflogsEncounterCache = [];
-            tomestoneInfoCache = [];
+            fflogsEncounterCache = new();
+            tomestoneInfoCache = new();
             fflogsFetched = false;
+            fflogsFetchInitiated = false;
             tomestoneFetched = false;
         }
 
@@ -142,21 +152,21 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 (plugin.PartyFinderManager.CurrentDutyId > 0 ||
                  !string.IsNullOrEmpty(plugin.PartyFinderManager.CurrentDutyName)))
             {
-                ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "Not a high-end duty.");
+                ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), Loc.T("Not a high-end duty."));
                 return;
             }
         }
 
         var members = plugin.PartyFinderManager.CurrentMembers;
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), $"PF Member Info - {plugin.PartyFinderManager.CurrentDutyName}");
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), $"{Loc.T("PF Member Info")} - {plugin.PartyFinderManager.CurrentDutyName}");
         ImGui.Separator();
         ImGui.Spacing();
 
         if (members.Count == 0)
         {
-            ImGui.TextUnformatted("No party finder listing selected.");
-            ImGui.TextUnformatted("Open a PF detail window to see member info.");
+            ImGui.TextUnformatted(Loc.T("No party finder listing selected."));
+            ImGui.TextUnformatted(Loc.T("Open a PF detail window to see member info."));
             return;
         }
 
@@ -169,7 +179,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         if (ImGui.BeginTable("##members_table", columnCount, tableFlags))
         {
-            ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed);
+            ImGui.TableSetupColumn(Loc.T("Name"), ImGuiTableColumnFlags.WidthFixed);
             if (hasTomestone)
             {
                 ImGui.TableSetupColumn("Tomestone", ImGuiTableColumnFlags.WidthFixed);
@@ -198,33 +208,40 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         var isResolving = plugin.PartyFinderManager.HasUnresolvedMembers;
 
+        // Auto-fetch FFLogs data once every name is resolved, if the option is enabled. Gated on
+        // fflogsFetchInitiated (not fflogsFetched) so a failed lookup can't retrigger it in a loop.
+        if (cfg.AutoFetchFFLogsWhenResolved && hasFFLogs && !fflogsFetchInitiated && !fflogsBatchInProgress
+            && !isResolving && members.Count > 0)
+        {
+            fflogsBatchInProgress = true;
+            fflogsFetched = true;
+            fflogsFetchInitiated = true;
+            _ = FetchAllFFLogsDataAsync(members);
+        }
+
         if (cfg.EnableTomestoneIntegration)
         {
             if (string.IsNullOrEmpty(cfg.TomestoneApiKey))
             {
                 ImGui.BeginDisabled();
-                ImGui.SmallButton("Tomestone API Key Needed##ts_all");
+                ImGui.SmallButton(Loc.T("Tomestone API Key Needed##ts_all"));
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
-                    ImGui.SetTooltip("Configure your Tomestone API key in Settings \u2192 Tomestone Integration.");
+                    ImGui.SetTooltip(Loc.T("Configure your Tomestone API key in Settings \u2192 Tomestone Integration."));
                 }
             }
             else
             {
-                var tsDisabled = isResolving || tomestoneBatchInProgress;
-                var tsLabel = tomestoneBatchInProgress
-                    ? "\u2026##ts_all"
-                    : isResolving
-                        ? "Tomestone (resolving\u2026)##ts_all"
-                        : "Tomestone##ts_all";
+                // Mirror the FFLogs button: fixed label, disabled once loading or loaded (no "\u2026" morph).
+                var tsDisabled = isResolving || tomestoneBatchInProgress || tomestoneFetched;
 
                 if (tsDisabled)
                 {
                     ImGui.BeginDisabled();
                 }
 
-                if (ImGui.SmallButton(tsLabel) && !tsDisabled)
+                if (ImGui.SmallButton(Loc.T("Tomestone Lookup##ts_all")) && !tsDisabled)
                 {
                     tomestoneBatchInProgress = true;
                     tomestoneFetched = true;
@@ -240,20 +257,22 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 {
                     if (isResolving)
                     {
-                        ImGui.SetTooltip("Waiting for player names to be resolved\u2026");
+                        ImGui.SetTooltip(Loc.T("Waiting for player names to be resolved\u2026"));
                     }
                     else if (tomestoneBatchInProgress)
                     {
-                        ImGui.SetTooltip("Looking up Tomestone data for all players\u2026");
+                        ImGui.SetTooltip(Loc.T("Looking up Tomestone data for all players\u2026"));
+                    }
+                    else if (tomestoneFetched)
+                    {
+                        ImGui.SetTooltip(Loc.T("Tomestone data already loaded for this listing"));
                     }
                     else
                     {
-                        ImGui.SetTooltip("Look up Tomestone data for all players");
+                        ImGui.SetTooltip(Loc.T("Look up Tomestone data for all players"));
                     }
                 }
             }
-
-            ImGui.SameLine();
         }
 
         if (cfg.EnableFFLogsIntegrationOverlay)
@@ -261,31 +280,28 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             if (string.IsNullOrEmpty(cfg.FFLogsClientId) || string.IsNullOrEmpty(cfg.FFLogsClientSecret))
             {
                 ImGui.BeginDisabled();
-                ImGui.SmallButton("FFLogs API Key Needed##ff_all");
+                ImGui.SmallButton(Loc.T("FFLogs API Key Needed##ff_all"));
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
-                    ImGui.SetTooltip("Configure your FFLogs credentials in Settings \u2192 FFLogs Integration.");
+                    ImGui.SetTooltip(Loc.T("Configure your FFLogs credentials in Settings \u2192 FFLogs Integration."));
                 }
             }
             else
             {
-                var ffDisabled = isResolving || fflogsBatchInProgress;
-                var ffLabel = fflogsBatchInProgress
-                    ? "\u2026##ff_all"
-                    : isResolving
-                        ? "FFLogs (resolving\u2026)##ff_all"
-                        : "FFLogs##ff_all";
-
+                // Disable once loading or already loaded (button press or auto-fetch) so it can't fetch
+                // twice; the label stays fixed instead of morphing into "...".
+                var ffDisabled = isResolving || fflogsBatchInProgress || fflogsFetched;
                 if (ffDisabled)
                 {
                     ImGui.BeginDisabled();
                 }
 
-                if (ImGui.SmallButton(ffLabel) && !ffDisabled)
+                if (ImGui.SmallButton(Loc.T("FFLogs Lookup##ff_all")) && !ffDisabled)
                 {
                     fflogsBatchInProgress = true;
                     fflogsFetched = true;
+                    fflogsFetchInitiated = true;
                     _ = FetchAllFFLogsDataAsync(members);
                 }
 
@@ -298,18 +314,30 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 {
                     if (isResolving)
                     {
-                        ImGui.SetTooltip("Waiting for player names to be resolved\u2026");
+                        ImGui.SetTooltip(Loc.T("Waiting for player names to be resolved\u2026"));
                     }
                     else if (fflogsBatchInProgress)
                     {
-                        ImGui.SetTooltip("Looking up FFLogs data for all players\u2026");
+                        ImGui.SetTooltip(Loc.T("Looking up FFLogs data for all players\u2026"));
+                    }
+                    else if (fflogsFetched)
+                    {
+                        ImGui.SetTooltip(Loc.T("FFLogs data already loaded for this listing"));
                     }
                     else
                     {
-                        ImGui.SetTooltip("Look up FFLogs data for all players");
+                        ImGui.SetTooltip(Loc.T("Look up FFLogs data for all players"));
                     }
                 }
             }
+        }
+
+        // While a batch is running, cleared/parsed rows appear first and progression fills in a moment later;
+        // a footer note makes clear that more data is still coming so the early rows don't read as "done".
+        if (fflogsBatchInProgress || tomestoneBatchInProgress)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), Loc.T("Fetching more data…"));
         }
 
         // Capture this frame's window size for use in PreDraw() clamping next frame
@@ -321,16 +349,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         ImGui.TableNextRow();
         ImGui.PushID(index);
 
-        // ── Known-player / blacklist checks ──────────────────────────────────
-        var isKnown = cfg.SpecialBorderColorForKnownPlayers &&
-                      plugin.PartyFinderManager.IsKnownPlayer(member.Name, member.World);
         var isBlacklisted = plugin.PartyFinderManager.IsBlacklisted(member.Name, member.World);
-
-        if (isKnown)
-        {
-            var rowColor = ImGui.ColorConvertFloat4ToU32(cfg.KnownPlayerBorderColor with { W = 0.18f });
-            ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, rowColor);
-        }
 
         // ── Column 0: Job icon + player name + badges ─────────────────────
         ImGui.TableSetColumnIndex(0);
@@ -377,14 +396,14 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         var isUnresolved = member.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
             || member.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
         var isResolved = !isUnresolved;
+        // Anonymized label used for private/unresolved members and, unless the user opts in,
+        // for resolved members too. The [Private] badge below distinguishes private members,
+        // so the name itself never repeats the word "Private".
+        var anonymousName = $"{Loc.T("Player")} {index + 1}";
         string displayName;
         if (member.IsPrivate)
         {
-            displayName = $"Private Player {index + 1}";
-        }
-        else if (isUnresolved && member.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix))
-        {
-            displayName = member.Name;
+            displayName = anonymousName;
         }
         else if (cfg.ShowResolvedPlayerNames && isResolved)
         {
@@ -392,29 +411,40 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
         else
         {
-            displayName = $"Player {index + 1}";
+            displayName = anonymousName;
         }
 
         if (member.IsPrivate)
         {
             ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), displayName);
         }
-        else if (isKnown)
-        {
-            ImGui.TextColored(cfg.KnownPlayerBorderColor, displayName);
-        }
         else
         {
             ImGui.TextUnformatted(displayName);
         }
 
+        // Resolved names are clickable (open their FFLogs page) and hover-show provenance + a click hint.
+        if (!member.IsPrivate && isResolved)
+        {
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                DrawNameProvenanceTooltip(member, showClickHint: true);
+            }
+
+            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            {
+                OpenFFLogsPageInBrowser(member.Name, member.World);
+            }
+        }
+
         if (member.IsPrivate)
         {
             ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), "[Private]");
+            ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), Loc.T("[Private]"));
             if (ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("Adventure plate is hidden or unavailable");
+                ImGui.SetTooltip(Loc.T("Adventure plate is hidden or unavailable"));
             }
         }
 
@@ -424,7 +454,18 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             ImGui.TextColored(new Vector4(0.9f, 0.2f, 0.2f, 1.0f), "[BL]");
             if (ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip("On your blacklist");
+                ImGui.SetTooltip(Loc.T("On your blacklist"));
+            }
+        }
+
+        // ── PlayerTrack provenance badge (full detail is on the name tooltip) ──
+        if (member.FromPlayerTrack)
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(PlayerTrackBadgeColor, "[PT]");
+            if (ImGui.IsItemHovered())
+            {
+                DrawNameProvenanceTooltip(member);
             }
         }
 
@@ -440,7 +481,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     {
                         if (cachedTs.NoLogs)
                         {
-                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No Logs");
+                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("No Logs"));
                         }
                         else
                         {
@@ -458,7 +499,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
                                 if (hasBestParse)
                                 {
-                                    clearsText += $" | Best: {cachedTs.BestPercent:F0}%";
+                                    clearsText += $" | Best: {cachedTs.BestPercent:F1}%";
                                 }
 
                                 ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f), clearsText);
@@ -476,23 +517,27 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                             else if (hasBestParse)
                             {
                                 ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                                    $"Best: {cachedTs.BestPercent:F0}%");
+                                    $"Best: {cachedTs.BestPercent:F1}%");
                             }
                             else
                             {
-                                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
+                                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
                             }
                         }
                     }
                     else
                     {
-                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Hidden Profile");
+                        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
                     }
                 }
                 else if (tomestoneBatchInProgress)
                 {
                     ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
                 }
+            }
+            else if (member.IsPrivate)
+            {
+                ImGui.TextColored(new Vector4(0.4f, 0.4f, 0.4f, 1.0f), "-");
             }
         }
 
@@ -504,122 +549,16 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             {
                 if (fflogsEncounterCache.TryGetValue(index, out var cachedFf))
                 {
-                    if (cachedFf is null || !cachedFf.HasData)
-                    {
-                        DrawNoLogsWithAverage(cachedFf?.AverageParsePercent);
-                    }
-                    else if (cachedFf.IsEncounterSpecific)
-                    {
-                        var hasMultiPhaseData = cachedFf.Phase1TotalKills.HasValue ||
-                                                cachedFf.Phase2TotalKills.HasValue ||
-                                                cachedFf.Phase1BestParse.HasValue ||
-                                                cachedFf.Phase2BestParse.HasValue ||
-                                                cachedFf.Phase2LowestBossHpPct.HasValue;
-
-                        if (hasMultiPhaseData)
-                        {
-                            var p1Parse = cachedFf.Phase1BestParse;
-                            var p2Parse = cachedFf.Phase2BestParse;
-
-                            if (cachedFf.TotalKills > 0 && p1Parse.HasValue && p2Parse.HasValue)
-                            {
-                                if (cachedFf.CurrentJobBestParse.HasValue)
-                                {
-                                    ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.4f, 1.0f),
-                                        $"Cleared {cachedFf.TotalKills}X");
-                                    ImGui.SameLine();
-                                    ImGui.TextUnformatted("P1");
-                                    ImGui.SameLine();
-                                    ImGui.TextColored(GetParseColor(p1Parse.Value), $"{p1Parse.Value:F0}%");
-                                    ImGui.SameLine();
-                                    ImGui.TextUnformatted("P2");
-                                    ImGui.SameLine();
-                                    ImGui.TextColored(GetParseColor(p2Parse.Value), $"{p2Parse.Value:F0}%");
-                                }
-                                else
-                                {
-                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f),
-                                        $"Cleared {cachedFf.TotalKills}X P1 {p1Parse.Value:F0}% P2 {p2Parse.Value:F0}%");
-                                }
-
-                                DrawBestParseOnDifferentJob(cachedFf, member);
-                            }
-                            else
-                            {
-                                if (p1Parse.HasValue)
-                                {
-                                    ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F0}%");
-                                }
-                                else
-                                {
-                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P1 No logs");
-                                }
-
-                                ImGui.SameLine();
-
-                                if (cachedFf.Phase2LowestBossHpPct.HasValue)
-                                {
-                                    ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                                        $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F0}%");
-                                }
-                                else if (p2Parse.HasValue)
-                                {
-                                    ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F0}%");
-                                }
-                                else
-                                {
-                                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "P2 No logs");
-                                }
-
-                                DrawBestParseOnDifferentJob(cachedFf, member);
-                            }
-                        }
-                        else if (cachedFf.TotalKills > 0)
-                        {
-                            if (cachedFf.CurrentJobBestParse.HasValue)
-                            {
-                                ImGui.TextColored(GetParseColor(cachedFf.CurrentJobBestParse.Value),
-                                    $"Cleared {cachedFf.TotalKills}X {cachedFf.CurrentJobBestParse.Value:F0}%");
-                            }
-                            else
-                            {
-                                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f),
-                                    $"Cleared {cachedFf.TotalKills}X No Current Job Logs");
-                            }
-
-                            DrawBestParseOnDifferentJob(cachedFf, member);
-                        }
-                        else if (cachedFf.LowestBossHpPct.HasValue)
-                        {
-                            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
-                                $"{cachedFf.LowestBossHpPct.Value:F0}%");
-                        }
-                        else if (cachedFf.AverageParsePercent.HasValue)
-                        {
-                            DrawNoLogsWithAverage(cachedFf.AverageParsePercent);
-                        }
-                        else
-                        {
-                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
-                        }
-                    }
-                    else
-                    {
-                        if (cachedFf.BestParse.HasValue)
-                        {
-                            ImGui.TextColored(GetParseColor(cachedFf.BestParse.Value),
-                                $"Average overall parse {cachedFf.BestParse.Value:F1}%");
-                        }
-                        else
-                        {
-                            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "N/A");
-                        }
-                    }
+                    DrawFFLogsCellContent(cachedFf, member);
                 }
                 else if (fflogsBatchInProgress)
                 {
-                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "\u2026");
+                    ImGui.TextColored(NoDataColor, "…");
                 }
+            }
+            else if (member.IsPrivate)
+            {
+                ImGui.TextColored(NoDataColor, "-");
             }
         }
 
@@ -655,128 +594,99 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                         : (m.Name, m.World, m.JobAbbreviation));
                 }
 
-                Dictionary<int, EncounterParseResult> results;
-                if (encounterIds.Value.SecondaryEncounterId.HasValue)
-                {
-                    results = await plugin.FFLogsService.GetMultiEncounterDataForAllAsync(
-                        memberData,
-                        encounterIds.Value.PrimaryEncounterId,
-                        encounterIds.Value.SecondaryEncounterId.Value);
-                }
-                else
-                {
-                    results = await plugin.FFLogsService.GetEncounterDataForAllAsync(
-                        memberData, encounterIds.Value.PrimaryEncounterId);
-                }
+                // Aggregates P1/P2 and, for Ultimates, kills/parses across every expansion's listing.
+                // Progressive: the callback renders fast kill/parse data the moment it arrives, so the slow
+                // per-player progression query doesn't hold up the whole table.
+                var results = await plugin.FFLogsService.GetDutyEncounterDataForAllAsync(
+                    memberData,
+                    plugin.PartyFinderManager.CurrentDutyId,
+                    plugin.PartyFinderManager.CurrentDutyName,
+                    onMemberUpdated: (index, result) => fflogsEncounterCache[index] = result);
 
-                // Update cache immediately with bulk results
+                // Ensure the final state is consistent (also covers any members the callback didn't touch).
                 foreach (var (index, result) in results)
                 {
                     fflogsEncounterCache[index] = result;
                 }
 
-                // Fill in any missing indices
+                // The zone-average fallback for no-log players is already folded into the batched
+                // results by the service. Just fill any indices it didn't cover (private/unresolved slots).
                 for (var i = 0; i < members.Count; i++)
                 {
                     if (!fflogsEncounterCache.ContainsKey(i))
                     {
-                        fflogsEncounterCache[i] = new EncounterParseResult(false, true, 0, null, null, null);
-                    }
-                }
-
-                // For players with no encounter-specific data, fetch their
-                // general average parse so we can show "No logs - Average percentage parse X%"
-                for (var i = 0; i < members.Count; i++)
-                {
-                    var cached = fflogsEncounterCache[i];
-                    var hasEncounterData = cached is not null &&
-                                           (cached.TotalKills > 0 ||
-                                            cached.LowestBossHpPct.HasValue ||
-                                            cached.Phase1BestParse.HasValue ||
-                                            cached.Phase2BestParse.HasValue ||
-                                            cached.Phase2LowestBossHpPct.HasValue);
-
-                    var isUnresolvedMember = members[i].Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                        || members[i].Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
-                    if (cached is not null && !hasEncounterData && !members[i].IsPrivate && !isUnresolvedMember)
-                    {
-                        try
-                        {
-                            var avg = await plugin.FFLogsService.GetBestPerfAvgAsync(
-                                members[i].Name, members[i].World);
-                            if (avg.HasValue)
-                            {
-                                fflogsEncounterCache[i] = cached with { AverageParsePercent = avg.Value };
-                            }
-                        }
-                        catch (Exception)
-                        {
-                        }
+                        fflogsEncounterCache[i] = new EncounterParseResult(false, true, 0, null, null);
                     }
                 }
             }
             else
             {
-                // Fallback: general zone parse for each member - update cache progressively
+                // Fallback: batched general zone parse in one request. Private/unresolved slots skip lookup.
+                var memberData = new List<(string Name, string World, string JobAbbreviation)>();
                 for (var i = 0; i < members.Count; i++)
                 {
-                    var member = members[i];
-                    if (member.IsPrivate
-                        || member.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                        || member.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix))
-                    {
-                        fflogsEncounterCache[i] = null;
-                        continue;
-                    }
+                    var m = members[i];
+                    var isUnresolvedSlot = m.IsPrivate
+                        || m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
+                        || m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
+                    memberData.Add(isUnresolvedSlot
+                        ? (string.Empty, string.Empty, m.JobAbbreviation)
+                        : (m.Name, m.World, m.JobAbbreviation));
+                }
 
-                    try
-                    {
-                        var avg = await plugin.FFLogsService.GetBestPerfAvgAsync(
-                            member.Name, member.World);
-                        fflogsEncounterCache[i] = avg.HasValue
-                            ? new EncounterParseResult(true, false, 0, avg.Value, null, null)
-                            : new EncounterParseResult(false, false, 0, null, null, null);
-                    }
-                    catch (Exception ex)
-                    {
-                        PassportCheckerReborn.Log.Warning(ex,
-                            $"[OverlayWindow] FFLogs lookup failed for {member.Name}@{member.World}");
-                        fflogsEncounterCache[i] = null;
-                    }
+                var averages = await plugin.FFLogsService.GetZoneAveragesForAllAsync(memberData);
+                for (var i = 0; i < members.Count; i++)
+                {
+                    var m = members[i];
+                    var isUnresolvedSlot = m.IsPrivate
+                        || m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
+                        || m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
+                    fflogsEncounterCache[i] = isUnresolvedSlot
+                        ? null
+                        : averages.TryGetValue(i, out var r) ? r : new EncounterParseResult(false, false, 0, null, null);
                 }
             }
         }
         catch (Exception ex)
         {
             PassportCheckerReborn.Log.Warning(ex, "[OverlayWindow] FFLogs batch lookup failed.");
+            fflogsFetched = false; // hard failure — let the button retry
         }
         finally
         {
             fflogsBatchInProgress = false;
+
+            // If any member's lookup failed, re-enable the button so the user can retry.
+            foreach (var r in fflogsEncounterCache.Values)
+            {
+                if (r?.FetchFailed == true)
+                {
+                    fflogsFetched = false;
+                    break;
+                }
+            }
         }
     }
 
     /// <summary>
-    /// Opens FFLogs character pages in the browser for all members.
+    /// Opens one player's FFLogs character page in the browser. The URL is built directly from name + world
+    /// (no API lookup), so this spends zero FFLogs rate-limit points.
     /// </summary>
-    private async Task OpenAllFFLogsBrowserAsync(IReadOnlyList<PartyMemberInfo> members)
+    private static void OpenFFLogsPageInBrowser(string name, string world)
     {
-        foreach (var member in members)
+        var url = FFLogsService.GetCharacterPageUrl(name, world);
+        if (url is null)
         {
-            try
-            {
-                var characterId = await plugin.FFLogsService.GetCharacterIdAsync(member.Name, member.World);
-                if (characterId.HasValue)
-                {
-                    var url = $"https://www.fflogs.com/character/id/{characterId.Value}";
-                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-                }
-            }
-            catch (Exception ex)
-            {
-                PassportCheckerReborn.Log.Warning(ex,
-                    $"[OverlayWindow] FFLogs browser open failed for {member.Name}@{member.World}");
-            }
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, $"[OverlayWindow] FFLogs page open failed for {name}@{world}");
         }
     }
 
@@ -826,33 +736,6 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
     }
 
-    /// <summary>
-    /// Opens Tomestone.gg profile pages in the browser for all members.
-    /// </summary>
-    private async Task OpenAllTomestoneBrowserAsync(IReadOnlyList<PartyMemberInfo> members)
-    {
-        foreach (var member in members)
-        {
-            try
-            {
-                var info = await plugin.TomestoneService.GetCharacterInfoAsync(member.Name, member.World);
-                var characterId = info?.CharacterId;
-
-                if (string.IsNullOrWhiteSpace(characterId))
-                {
-                    characterId = await plugin.TomestoneService.ResolveLodestoneIdAsync(member.Name, member.World);
-                }
-
-                TomestoneService.OpenTomestonePage(member.Name, member.World, characterId);
-            }
-            catch (Exception ex)
-            {
-                PassportCheckerReborn.Log.Warning(ex,
-                    $"[OverlayWindow] Tomestone browser open failed for {member.Name}@{member.World}");
-                TomestoneService.OpenTomestonePage(member.Name, member.World);
-            }
-        }
-    }
 
     /// <summary>
     /// Returns an FFLogs-style color for the given parse percentile.
@@ -867,21 +750,203 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         _ => new Vector4(0.600f, 0.600f, 0.600f, 1.0f),  // Grey (<25)
     };
 
+    // Shared FFLogs-cell colours. NoDataColor is slightly dimmer than GetParseColor's <25 grey (0.6) so an
+    // absent/no-log cell reads a touch differently from a real-but-low parse, while staying legible.
+    internal static readonly Vector4 NoDataColor = new(0.5f, 0.5f, 0.5f, 1.0f);
+    private static readonly Vector4 ClearGreen = new(0.4f, 0.8f, 0.4f, 1.0f);
+    private static readonly Vector4 ProgYellow = new(0.8f, 0.8f, 0.2f, 1.0f);
+
     /// <summary>
-    /// Draws "No logs - Average percentage parse X%" with color, or plain "No logs" if no average.
+    /// Renders the FFLogs cell for a member — the single source of truth shared by both overlays. Handles
+    /// lookup failure, the unmapped zone-average fallback, multi-phase (P1/P2), single clears, progression,
+    /// and no-logs. The caller is responsible for the "still loading" and private-slot cases.
     /// </summary>
-    internal static void DrawNoLogsWithAverage(double? averageParsePercent)
+    internal static void DrawFFLogsCellContent(EncounterParseResult? cachedFf, PartyMemberInfo member)
     {
-        if (averageParsePercent.HasValue)
+        if (cachedFf is null || !cachedFf.HasData)
         {
-            var avgColor = GetParseColor(averageParsePercent.Value);
-            ImGui.TextColored(avgColor,
-                $"No logs - Average percentage parse {averageParsePercent.Value:F0}%");
+            if (cachedFf?.FetchFailed == true)
+            {
+                DrawLookupFailed();
+            }
+            else
+            {
+                ImGui.TextColored(NoDataColor, Loc.T("No logs"));
+            }
+
+            return;
+        }
+
+        if (!cachedFf.IsEncounterSpecific)
+        {
+            // Unmapped duty: the only signal we have is the character's current-tier average.
+            if (cachedFf.BestParse.HasValue)
+            {
+                DrawParseTemplate(Loc.T("Average overall parse {0}%"), cachedFf.BestParse.Value);
+            }
+            else
+            {
+                ImGui.TextColored(NoDataColor, Loc.T("N/A"));
+            }
+
+            return;
+        }
+
+        var hasMultiPhaseData = cachedFf.Phase1TotalKills.HasValue ||
+                                cachedFf.Phase2TotalKills.HasValue ||
+                                cachedFf.Phase1BestParse.HasValue ||
+                                cachedFf.Phase2BestParse.HasValue ||
+                                cachedFf.Phase2LowestBossHpPct.HasValue;
+
+        if (hasMultiPhaseData)
+        {
+            DrawMultiPhaseCell(cachedFf, member);
+        }
+        else if (cachedFf.TotalKills > 0)
+        {
+            DrawClearedCell(cachedFf, member);
+        }
+        else if (cachedFf.LowestBossHpPct.HasValue)
+        {
+            DrawProgression(cachedFf);
         }
         else
         {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "No logs");
+            ImGui.TextColored(NoDataColor, Loc.T("No logs"));
         }
+    }
+
+    /// <summary>Two-phase (M4-style) fight: kills + per-phase parses, or per-phase progress when not cleared.</summary>
+    private static void DrawMultiPhaseCell(EncounterParseResult cachedFf, PartyMemberInfo member)
+    {
+        var p1Parse = cachedFf.Phase1BestParse;
+        var p2Parse = cachedFf.Phase2BestParse;
+
+        if (cachedFf.TotalKills > 0 && p1Parse.HasValue && p2Parse.HasValue)
+        {
+            // A clear is always green; the per-phase parses stay grade-coloured.
+            ImGui.TextColored(ClearGreen, string.Format(Loc.T("Cleared {0}X"), cachedFf.TotalKills));
+            ImGui.SameLine();
+            ImGui.TextUnformatted("P1");
+            ImGui.SameLine();
+            ImGui.TextColored(GetParseColor(p1Parse.Value), $"{p1Parse.Value:F1}%");
+            ImGui.SameLine();
+            ImGui.TextUnformatted("P2");
+            ImGui.SameLine();
+            ImGui.TextColored(GetParseColor(p2Parse.Value), $"{p2Parse.Value:F1}%");
+        }
+        else
+        {
+            if (p1Parse.HasValue)
+            {
+                ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F1}%");
+            }
+            else
+            {
+                ImGui.TextColored(NoDataColor, Loc.T("P1 No logs"));
+            }
+
+            ImGui.SameLine();
+
+            if (cachedFf.Phase2LowestBossHpPct.HasValue)
+            {
+                ImGui.TextColored(ProgYellow, $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F1}%");
+            }
+            else if (p2Parse.HasValue)
+            {
+                ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F1}%");
+            }
+            else
+            {
+                ImGui.TextColored(NoDataColor, Loc.T("P2 No logs"));
+            }
+        }
+
+        DrawBestParseOnDifferentJob(cachedFf, member);
+    }
+
+    /// <summary>Single-encounter clear: green "Cleared NX" + current-job parse (icon), "-%", or nothing for a non-combat job.</summary>
+    private static void DrawClearedCell(EncounterParseResult cachedFf, PartyMemberInfo member)
+    {
+        var clearedText = string.Format(Loc.T("Cleared {0}X"), cachedFf.TotalKills);
+
+        if (cachedFf.CurrentJobBestParse.HasValue)
+        {
+            // "46킬 · [current job icon] 1%" — the icon makes clear the % is for the job they're bringing.
+            ImGui.TextColored(ClearGreen, clearedText + " ·");
+            ImGui.SameLine();
+            DrawJobIcon(member.JobAbbreviation,
+                FFLogsService.GetJobIconIdForSpec(FFLogsService.GetSpecForJob(member.JobAbbreviation)));
+            ImGui.SameLine();
+            ImGui.TextColored(GetParseColor(cachedFf.CurrentJobBestParse.Value), $"{cachedFf.CurrentJobBestParse.Value:F1}%");
+        }
+        else if (FFLogsService.GetSpecForJob(member.JobAbbreviation) is not null)
+        {
+            // Combat job that cleared but has no ranked parse for this fight: green clear + [icon] -%.
+            ImGui.TextColored(ClearGreen, clearedText + " ·");
+            ImGui.SameLine();
+            DrawJobIcon(member.JobAbbreviation,
+                FFLogsService.GetJobIconIdForSpec(FFLogsService.GetSpecForJob(member.JobAbbreviation)));
+            ImGui.SameLine();
+            ImGui.TextColored(NoDataColor, "-%");
+        }
+        else
+        {
+            // Non-combat job (crafter/gatherer): no combat parse to show — just the clear, plus the best
+            // parse on a real job (via DrawBestParseOnDifferentJob below).
+            ImGui.TextColored(ClearGreen, clearedText);
+        }
+
+        DrawBestParseOnDifferentJob(cachedFf, member);
+    }
+
+    /// <summary>
+    /// Draws a no-kill progression pull in amber. Phased fights read "P3 8.8%"; phase-less fights read
+    /// "8.8% 전멸" so a wipe % isn't mistaken for a parse percentile.
+    /// </summary>
+    internal static void DrawProgression(EncounterParseResult cachedFf)
+    {
+        if (!cachedFf.LowestBossHpPct.HasValue)
+        {
+            return;
+        }
+
+        var pct = cachedFf.LowestBossHpPct.Value.ToString("F1");
+        var text = cachedFf.ProgLastPhase is int ph && ph >= 2
+            ? $"P{ph} {pct}%"
+            : string.Format(Loc.T("{0}% wipe"), pct);
+        ImGui.TextColored(ProgYellow, text);
+    }
+
+    /// <summary>Draws an amber "Lookup failed" marker (distinct from grey "No logs") with a retry hint tooltip.</summary>
+    internal static void DrawLookupFailed()
+    {
+        ImGui.TextColored(new Vector4(0.85f, 0.55f, 0.25f, 1.0f), Loc.T("Lookup failed"));
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("FFLogs lookup failed (network or rate limit) — refresh to retry."));
+        }
+    }
+
+    /// <summary>
+    /// Renders a localized "…{0}%" parse template with only the percentage (and its trailing "%") tinted by
+    /// parse grade; the surrounding descriptive label stays neutral grey. Falls back to a fully-coloured
+    /// string if the template has no <c>{0}</c> placeholder.
+    /// </summary>
+    internal static void DrawParseTemplate(string template, double pct)
+    {
+        var placeholder = template.IndexOf("{0}", StringComparison.Ordinal);
+        var pctText = pct.ToString("F1");
+
+        if (placeholder < 0)
+        {
+            ImGui.TextColored(GetParseColor(pct), string.Format(template, pctText));
+            return;
+        }
+
+        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), template[..placeholder]);
+        ImGui.SameLine(0, 0);
+        ImGui.TextColored(GetParseColor(pct), pctText + template[(placeholder + 3)..]);
     }
 
     /// <summary>
@@ -920,41 +985,122 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     internal static void DrawJobSpecBestParse(double parse, string jobAbbreviation, uint? jobIconId)
     {
         ImGui.SameLine();
-        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "Best:");
-
-        // Draw job icon
+        ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), "·");
         ImGui.SameLine();
-        if (jobIconId.HasValue)
+        DrawJobIcon(jobAbbreviation, jobIconId);
+        ImGui.SameLine();
+        ImGui.TextColored(GetParseColor(parse), $"{parse:F1}%");
+    }
+
+    /// <summary>Draws a job icon inline (16px), or a "[ABBR]" text fallback. Caller handles SameLine.</summary>
+    private static void DrawJobIcon(string jobAbbreviation, uint? iconId, float size = 16f)
+    {
+        if (iconId.HasValue)
         {
             try
             {
-                var iconLookup = new GameIconLookup(jobIconId.Value);
-                var iconHandle = PassportCheckerReborn.TextureProvider.GetFromGameIcon(iconLookup);
-                var texture = iconHandle.GetWrapOrDefault();
+                var lookup = new GameIconLookup(iconId.Value);
+                var texture = PassportCheckerReborn.TextureProvider.GetFromGameIcon(lookup).GetWrapOrDefault();
                 if (texture is not null)
                 {
-                    ImGui.Image(texture.Handle, new Vector2(16, 16));
-                    ImGui.SameLine();
-                }
-                else
-                {
-                    ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{jobAbbreviation}]");
-                    ImGui.SameLine();
+                    ImGui.Image(texture.Handle, new Vector2(size, size));
+                    return;
                 }
             }
             catch
             {
-                ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{jobAbbreviation}]");
-                ImGui.SameLine();
+                // fall through to the text fallback
             }
         }
-        else
+
+        ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{jobAbbreviation}]");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PlayerTrack helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static readonly Vector4 PlayerTrackBadgeColor = new(0.4f, 0.8f, 0.9f, 1.0f);
+
+    /// <summary>
+    /// Tooltip shown when hovering a resolved member's name (or the [PT] badge): the name's source,
+    /// how old the cached data is, and any previous names recorded for this Content ID. Reads the
+    /// in-memory CID cache — no IO.
+    /// </summary>
+    private void DrawNameProvenanceTooltip(PartyMemberInfo member, bool showClickHint = false)
+    {
+        var entry = plugin.CidCache.TryGet(member.ContentId, out var e) && e is not null ? e : null;
+        if (entry is null && !showClickHint)
         {
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"[{jobAbbreviation}]");
-            ImGui.SameLine();
+            return;
         }
 
-        ImGui.TextColored(GetParseColor(parse), $"{parse:F0}%");
+        ImGui.BeginTooltip();
+
+        if (entry is not null)
+        {
+            // Source line dropped — the [PT] badge already marks PlayerTrack-sourced names, and live is the
+            // default, so it was redundant.
+            if (entry.LastSeen != DateTime.MinValue)
+            {
+                ImGui.TextUnformatted($"{Loc.T("Data age")}: {FormatAge(DateTime.UtcNow - entry.LastSeen)} ({entry.LastSeen.ToLocalTime():yyyy-MM-dd HH:mm})");
+                if (DateTime.UtcNow - entry.LastSeen >= TimeSpan.FromDays(Math.Max(1, plugin.Configuration.StaleNameThresholdDays)))
+                {
+                    ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("This name is old and may be out of date."));
+                }
+            }
+
+            if (entry.PreviousNames is { Count: > 0 } previous)
+            {
+                ImGui.Separator();
+                ImGui.TextUnformatted(Loc.T("Previously seen as:"));
+                foreach (var p in previous)
+                {
+                    var world = string.IsNullOrEmpty(p.WorldName) ? string.Empty : $"@{p.WorldName}";
+                    var when = p.SeenUntil != DateTime.MinValue
+                        ? "  (" + string.Format(Loc.T("until {0}"), p.SeenUntil.ToLocalTime().ToString("yyyy-MM-dd")) + ")"
+                        : string.Empty;
+                    ImGui.BulletText($"{p.Name}{world}{when}");
+                }
+            }
+        }
+
+        if (showClickHint)
+        {
+            if (entry is not null)
+            {
+                ImGui.Separator();
+            }
+
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Click to open FFLogs page"));
+        }
+
+        ImGui.EndTooltip();
+    }
+
+    private static string FormatAge(TimeSpan span)
+    {
+        if (span.TotalDays >= 365)
+        {
+            return string.Format(Loc.T("{0}y ago"), (int)(span.TotalDays / 365));
+        }
+
+        if (span.TotalDays >= 1)
+        {
+            return string.Format(Loc.T("{0}d ago"), (int)span.TotalDays);
+        }
+
+        if (span.TotalHours >= 1)
+        {
+            return string.Format(Loc.T("{0}h ago"), (int)span.TotalHours);
+        }
+
+        if (span.TotalMinutes >= 1)
+        {
+            return string.Format(Loc.T("{0}m ago"), (int)span.TotalMinutes);
+        }
+
+        return Loc.T("just now");
     }
 }
 
@@ -965,4 +1111,10 @@ public record PartyMemberInfo(
     string JobAbbreviation,
     ulong ContentId = 0,
     bool IsPrivate = false,
-    ushort WorldId = 0);
+    ushort WorldId = 0)
+{
+    /// <summary>True when this member's name was resolved from the PlayerTrack database
+    /// rather than from PF packets / adventure plate. The last-seen/previous-name detail for the
+    /// tooltip is fetched on demand from <c>PlayerTrackService</c> by ContentId.</summary>
+    public bool FromPlayerTrack { get; init; }
+}
