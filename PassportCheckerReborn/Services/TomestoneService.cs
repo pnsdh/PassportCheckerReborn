@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace PassportCheckerReborn.Services;
@@ -22,6 +23,10 @@ public sealed partial class TomestoneService : IDisposable
 {
     private readonly PassportCheckerReborn plugin;
     private readonly HttpClient httpClient;
+
+    // Cancelled on Dispose so in-flight lookups stop immediately instead of running the per-member loop to
+    // completion after the plugin is torn down.
+    private readonly CancellationTokenSource lifetimeCts = new();
 
     private const string BaseUrl = "https://tomestone.gg";
     private const string ApiBaseUrl = "https://tomestone.gg/api";
@@ -112,9 +117,7 @@ public sealed partial class TomestoneService : IDisposable
             ["The Unmaking (Extreme)"] =
                 new("dawntrail", "trials-extreme", "enuo"),
 
-            // ── Dawntrail Unreal ──────────────────────────────────────────────────
-            ["Tsukuyomi's Pain (Unreal)"] =
-                new("dawntrail", "unreal", "tsukuyomis-pain"),
+            // ── Dawntrail Unreal (rotating — keep only the currently-active Unreal) ──
             ["Shinryu's Domain (Unreal)"] =
                 new("dawntrail", "unreal", "shinryu"),
 
@@ -160,7 +163,11 @@ public sealed partial class TomestoneService : IDisposable
     public TomestoneService(PassportCheckerReborn plugin)
     {
         this.plugin = plugin;
-        httpClient = new HttpClient();
+        httpClient = new HttpClient
+        {
+            // Cap a hung connection at 30s instead of the 100s default.
+            Timeout = TimeSpan.FromSeconds(30),
+        };
         httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"PassportCheckerReborn/{PassportCheckerReborn.Version}");
         httpClient.DefaultRequestHeaders.Accept.Add(
             new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
@@ -292,7 +299,7 @@ public sealed partial class TomestoneService : IDisposable
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.UserAgent.ParseAdd($"PassportCheckerReborn/{PassportCheckerReborn.Version}");
 
-            using var response = await httpClient.SendAsync(request);
+            using var response = await httpClient.SendAsync(request, lifetimeCts.Token);
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -339,7 +346,9 @@ public sealed partial class TomestoneService : IDisposable
 
     public void Dispose()
     {
+        lifetimeCts.Cancel();
         httpClient.Dispose();
+        lifetimeCts.Dispose();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -364,7 +373,7 @@ public sealed partial class TomestoneService : IDisposable
 
             using var request = CreateAuthenticatedRequest(url);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] GET {url}");
-            using var response = await httpClient.SendAsync(request);
+            using var response = await httpClient.SendAsync(request, lifetimeCts.Token);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] progression-graph status: {(int)response.StatusCode} {response.StatusCode}");
             if (!response.IsSuccessStatusCode)
             {
@@ -411,7 +420,7 @@ public sealed partial class TomestoneService : IDisposable
 
             using var request = CreateAuthenticatedRequest(url);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] GET {url}");
-            using var response = await httpClient.SendAsync(request);
+            using var response = await httpClient.SendAsync(request, lifetimeCts.Token);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] activity status: {(int)response.StatusCode} {response.StatusCode}");
             if (!response.IsSuccessStatusCode)
             {
@@ -452,7 +461,7 @@ public sealed partial class TomestoneService : IDisposable
 
             using var request = CreateAuthenticatedRequest(url);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] GET {url}");
-            using var response = await httpClient.SendAsync(request);
+            using var response = await httpClient.SendAsync(request, lifetimeCts.Token);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] profile status: {(int)response.StatusCode} {response.StatusCode}");
             if (!response.IsSuccessStatusCode)
             {
@@ -512,7 +521,7 @@ public sealed partial class TomestoneService : IDisposable
 
             using var request = CreateAuthenticatedRequest(url);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] GET {url}");
-            using var response = await httpClient.SendAsync(request);
+            using var response = await httpClient.SendAsync(request, lifetimeCts.Token);
             //PassportCheckerReborn.Log.Debug($"[TomestoneService] full-profile status: {(int)response.StatusCode} {response.StatusCode}");
             if (!response.IsSuccessStatusCode)
             {

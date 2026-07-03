@@ -17,20 +17,19 @@ public class MainWindow : Window, IDisposable
     private string fFlogsTestResult = string.Empty;
     private bool fFlogsTestInProgress = false;
 
+    // FFLogs API usage display
+    private string fFlogsUsageText = string.Empty;
+    private bool fFlogsUsageInProgress;
+    private bool fFlogsUsageRequested;
+
     // Temporary buffer for Tomestone API key input
     private string tomestoneApiKeyInput = string.Empty;
 
     public MainWindow(PassportCheckerReborn plugin)
-        : base("Passport Checker Reborn – Settings###PassportCheckerRebornSettings",
+        : base("Passport Checker Reborn (Custom) – Settings###PassportCheckerRebornSettings",
                ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         this.plugin = plugin;
-
-        SizeConstraints = new WindowSizeConstraints
-        {
-            MinimumSize = new Vector2(480, 480),
-            MaximumSize = new Vector2(800, 900)
-        };
 
         SizeConstraints = new WindowSizeConstraints
         {
@@ -75,6 +74,8 @@ public class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        DrawLanguageSelector();
+
         if (!ImGui.BeginTabBar("##SettingsTabs"))
         {
             return;
@@ -82,11 +83,41 @@ public class MainWindow : Window, IDisposable
 
         DrawGeneralTab();
         DrawOverlayTab();
+        // Always show these tabs (they hold API config that's useful before enabling); the tab used to
+        // appear/disappear with the toggle, which was confusing. Each shows an "off" hint when disabled.
+        // Tomestone is unsupported on the Korean client, so its tab stays hidden there.
         DrawFFLogsTab();
-        DrawTomestoneTab();
+        if (!PassportCheckerReborn.IsKoreanClient)
+        {
+            DrawTomestoneTab();
+        }
+        DrawPlayerTrackTab();
         DrawAboutTab();
 
         ImGui.EndTabBar();
+    }
+
+    private void DrawLanguageSelector()
+    {
+        var names = Enum.GetNames(typeof(PluginLanguage));
+        var display = new string[names.Length];
+        for (var i = 0; i < names.Length; i++)
+        {
+            display[i] = Loc.T(names[i]);
+        }
+
+        var current = (int)Configuration.Language;
+        ImGui.TextUnformatted(Loc.T("Language"));
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(140f);
+        if (ImGui.Combo("##pcr_language", ref current, display, display.Length))
+        {
+            Configuration.Language = (PluginLanguage)current;
+            Loc.Language = Configuration.Language;
+            Configuration.Save();
+        }
+
+        ImGui.Separator();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -94,77 +125,35 @@ public class MainWindow : Window, IDisposable
     // ─────────────────────────────────────────────────────────────────────────
     private void DrawGeneralTab()
     {
-        if (!ImGui.BeginTabItem("General"))
+        if (!ImGui.BeginTabItem(Loc.T("General")))
         {
             return;
         }
 
         ImGui.Spacing();
 
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Party Finder Detail Optimizations");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("Party Finder Detail Optimizations"));
         ImGui.Separator();
         ImGui.Spacing();
 
-        var specialBorder = Configuration.SpecialBorderColorForKnownPlayers;
-        if (ImGui.Checkbox("Special Border Color For Known Players", ref specialBorder))
+        var keepOpen = Configuration.PreventAutoClosingOnPartyChanges2;
+        if (ImGui.Checkbox(Loc.T("Keep the Party Finder window open when the party changes"), ref keepOpen))
         {
-            Configuration.SpecialBorderColorForKnownPlayers = specialBorder;
+            Configuration.PreventAutoClosingOnPartyChanges2 = keepOpen;
             Configuration.Save();
         }
-
-        if (Configuration.SpecialBorderColorForKnownPlayers)
+        if (ImGui.IsItemHovered())
         {
-            ImGui.Indent(20f);
-            var borderColor = Configuration.KnownPlayerBorderColor;
-            if (ImGui.ColorEdit4("Border Color##knownplayer", ref borderColor, ImGuiColorEditFlags.NoInputs))
-            {
-                Configuration.KnownPlayerBorderColor = borderColor;
-                Configuration.Save();
-            }
-            ImGui.Unindent(20f);
+            ImGui.SetTooltip(Loc.T("The game normally closes the Party Finder detail window when your party composition changes; this keeps it (and the member overlay) open."));
         }
-
-        var showJobIcons = Configuration.ShowPartyJobIcons;
-        if (ImGui.Checkbox("Show Party Job Icons", ref showJobIcons))
-        {
-            Configuration.ShowPartyJobIcons = showJobIcons;
-            Configuration.Save();
-        }
-
-        ImGui.BeginDisabled();
-        var preventAutoClose = Configuration.PreventAutoClosingOnPartyChanges2;
-        if (ImGui.Checkbox("Prevent Party Finder Window from Auto-Closing on Party Changes (Broken, being fixed)", ref preventAutoClose))
-        {
-            Configuration.PreventAutoClosingOnPartyChanges2 = preventAutoClose;
-            Configuration.Save();
-        }
-        ImGui.EndDisabled();
 
         ImGui.Spacing();
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Party Finder List Optimizations");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("Party Finder List Optimizations"));
         ImGui.Separator();
         ImGui.Spacing();
-
-        ImGui.BeginDisabled();
-        var timeSorting = Configuration.EnableTrueTimeBasedSorting;
-        if (ImGui.Checkbox("Enable True Time-Based Sorting for Party Finder", ref timeSorting))
-        {
-            Configuration.EnableTrueTimeBasedSorting = timeSorting;
-            Configuration.Save();
-        }
-        ImGui.EndDisabled();
-
-        ImGui.BeginDisabled();
-        var expand100 = Configuration.ExpandListingsTo100PerPage;
-        if (ImGui.Checkbox("Expand Party Finder Listings to Show 100 Per Page", ref expand100))
-        {
-            Configuration.ExpandListingsTo100PerPage = expand100;
-            Configuration.Save();
-        }
-        ImGui.EndDisabled();
 
         var autoRefresh = Configuration.EnableAutomaticRefresh;
-        if (ImGui.Checkbox("Enable Automatic Refresh for Party Finder Listings", ref autoRefresh))
+        if (ImGui.Checkbox(Loc.T("Enable Automatic Refresh for Party Finder Listings"), ref autoRefresh))
         {
             Configuration.EnableAutomaticRefresh = autoRefresh;
             Configuration.Save();
@@ -174,7 +163,7 @@ public class MainWindow : Window, IDisposable
         {
             ImGui.Indent(20f);
             var interval = Configuration.AutoRefreshIntervalSeconds;
-            if (ImGui.SliderInt("Refresh Interval (seconds)##refresh", ref interval, 10, 120))
+            if (ImGui.SliderInt(Loc.T("Refresh Interval (seconds)##refresh"), ref interval, 10, 120))
             {
                 Configuration.AutoRefreshIntervalSeconds = interval;
                 Configuration.Save();
@@ -182,49 +171,52 @@ public class MainWindow : Window, IDisposable
             ImGui.Unindent(20f);
         }
 
-        ImGui.BeginDisabled();
-        var oneClickFilter = Configuration.EnableOneClickJobFilter;
-        if (ImGui.Checkbox("Enable One-Click Job Filter Button (High-End Duties Only)", ref oneClickFilter))
-        {
-            Configuration.EnableOneClickJobFilter = oneClickFilter;
-            Configuration.Save();
-        }
-        ImGui.EndDisabled();
-
-        ImGui.BeginDisabled();
         var rightClick = Configuration.RightClickPlayerNameForRecruitment3;
-        if (ImGui.Checkbox("Right-Click Player Name to View Their Recruitment", ref rightClick))
+        if (ImGui.Checkbox(Loc.T("Right-Click Player Name to View Their Recruitment"), ref rightClick))
         {
             Configuration.RightClickPlayerNameForRecruitment3 = rightClick;
             Configuration.Save();
+
+            // Register/unregister the context-menu entry immediately so the toggle takes effect now.
+            if (rightClick)
+            {
+                plugin.PartyFinderManager.RegisterContextMenu();
+            }
+            else
+            {
+                plugin.PartyFinderManager.UnregisterContextMenu();
+            }
         }
-        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("Adds a 'View Recruitment' option when you right-click a player. If they're hosting a Party Finder listing, it finds and opens it."));
+        }
 
         ImGui.Spacing();
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Blacklist");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("Blacklist"));
         ImGui.Separator();
         ImGui.Spacing();
 
         var enableBlacklist = Configuration.EnableBlacklistFeature;
-        if (ImGui.Checkbox("Enable Blacklist Feature", ref enableBlacklist))
+        if (ImGui.Checkbox(Loc.T("Enable Blacklist Feature"), ref enableBlacklist))
         {
             Configuration.EnableBlacklistFeature = enableBlacklist;
             Configuration.Save();
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("When enabled, players on your in-game blacklist are marked with [BL] in the overlay.");
+            ImGui.SetTooltip(Loc.T("When enabled, players on your in-game blacklist are marked with [BL] in the overlay."));
         }
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("Refresh##bl_refresh"))
+        if (ImGui.SmallButton(Loc.T("Refresh##bl_refresh")))
         {
             plugin.PartyFinderManager.ForceRefreshBlacklist();
         }
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Re-reads the blacklist from the game and saves the result.");
+            ImGui.SetTooltip(Loc.T("Re-reads the blacklist from the game and saves the result."));
         }
 
         ImGui.Spacing();
@@ -236,7 +228,7 @@ public class MainWindow : Window, IDisposable
     // ─────────────────────────────────────────────────────────────────────────
     private void DrawOverlayTab()
     {
-        if (!ImGui.BeginTabItem("Overlay"))
+        if (!ImGui.BeginTabItem(Loc.T("Overlay")))
         {
             return;
         }
@@ -244,7 +236,7 @@ public class MainWindow : Window, IDisposable
         ImGui.Spacing();
 
         var showOverlay = Configuration.ShowMemberInfoOverlay;
-        if (ImGui.Checkbox("Show Member Info Overlay in PF Details", ref showOverlay))
+        if (ImGui.Checkbox(Loc.T("Show Member Info Overlay in PF Details"), ref showOverlay))
         {
             Configuration.ShowMemberInfoOverlay = showOverlay;
             Configuration.Save();
@@ -252,60 +244,130 @@ public class MainWindow : Window, IDisposable
 
         ImGui.Spacing();
 
-        using var disabled = new ImGuiDisabledScope(!Configuration.ShowMemberInfoOverlay);
-
-        var highEndOnly = Configuration.OnlyShowOverlayForHighEndDuties;
-        if (ImGui.Checkbox("Only Show Overlay for High-End Duties", ref highEndOnly))
+        // These options only affect the member overlay, so grey them out when it's off. The FFLogs/Tomestone
+        // toggles and the Party List overlay below are independent (the party list uses them too), so they
+        // stay enabled regardless.
+        using (new ImGuiDisabledScope(!Configuration.ShowMemberInfoOverlay))
         {
-            Configuration.OnlyShowOverlayForHighEndDuties = highEndOnly;
-            Configuration.Save();
+            var highEndOnly = Configuration.OnlyShowOverlayForHighEndDuties;
+            if (ImGui.Checkbox(Loc.T("Only Show Overlay for High-End Duties"), ref highEndOnly))
+            {
+                Configuration.OnlyShowOverlayForHighEndDuties = highEndOnly;
+                Configuration.Save();
+            }
+
+            var leftSide = Configuration.ShowOverlayOnLeftSide;
+            if (ImGui.Checkbox(Loc.T("Show overlay on the left side"), ref leftSide))
+            {
+                Configuration.ShowOverlayOnLeftSide = leftSide;
+                Configuration.Save();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(Loc.T("Unchecked places the overlay on the right side of the Party Finder."));
+            }
+
+            var showJobIcons = Configuration.ShowPartyJobIcons;
+            if (ImGui.Checkbox(Loc.T("Show Party Job Icons"), ref showJobIcons))
+            {
+                Configuration.ShowPartyJobIcons = showJobIcons;
+                Configuration.Save();
+            }
+
+            var showResolvedNames = Configuration.ShowResolvedPlayerNames;
+            if (ImGui.Checkbox(Loc.T("Show Resolved Player Names in Member Info Overlay"), ref showResolvedNames))
+            {
+                Configuration.ShowResolvedPlayerNames = showResolvedNames;
+                Configuration.Save();
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(Loc.T("When enabled, displays the actual player name (Name@World) once resolved, instead of \"Player X\"."));
+            }
         }
 
-        var leftSide = Configuration.ShowOverlayOnLeftSide;
-        if (ImGui.Checkbox("Show Overlay on Left Side (Right if Unchecked)", ref leftSide))
+        // Name freshness — re-verify stale cached names against the adventure plate. Independent of the
+        // member overlay (it maintains the shared name cache), so it stays enabled regardless.
+        var reverify = Configuration.EnableStaleNameReverification;
+        if (ImGui.Checkbox(Loc.T("Re-verify stale player names via adventure plate"), ref reverify))
         {
-            Configuration.ShowOverlayOnLeftSide = leftSide;
-            Configuration.Save();
-        }
-
-        var showResolvedNames = Configuration.ShowResolvedPlayerNames;
-        if (ImGui.Checkbox("Show Resolved Player Names in Member Info Overlay", ref showResolvedNames))
-        {
-            Configuration.ShowResolvedPlayerNames = showResolvedNames;
+            Configuration.EnableStaleNameReverification = reverify;
             Configuration.Save();
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("When enabled, displays the actual player name (Name@World) once resolved, instead of \"Player X\".");
+            ImGui.SetTooltip(Loc.T("When a cached name is older than the threshold below, quietly re-checks it against the player's adventure plate. Throttled by the cooldown so the same stale name isn't re-checked constantly; detected renames are recorded in the name history."));
+        }
+
+        if (Configuration.EnableStaleNameReverification)
+        {
+            ImGui.Indent(20f);
+            var staleDays = Configuration.StaleNameThresholdDays;
+            ImGui.SetNextItemWidth(160f);
+            if (ImGui.InputInt(Loc.T("Stale after (days)##stale_days"), ref staleDays, 1, 5))
+            {
+                Configuration.StaleNameThresholdDays = Math.Clamp(staleDays, 1, 3650);
+                Configuration.Save();
+            }
+
+            var cooldownHours = Configuration.ReverifyCooldownHours;
+            ImGui.SetNextItemWidth(160f);
+            if (ImGui.InputInt(Loc.T("Retry cooldown (hours)##reverify_cd"), ref cooldownHours, 1, 12))
+            {
+                Configuration.ReverifyCooldownHours = Math.Clamp(cooldownHours, 1, 8760);
+                Configuration.Save();
+            }
+            ImGui.Unindent(20f);
+        }
+
+        var privateCd = Configuration.PrivatePlayerReverifyCooldownHours;
+        ImGui.SetNextItemWidth(160f);
+        if (ImGui.InputInt(Loc.T("Re-check hidden (Private) players every (hours)##private_cd"), ref privateCd, 1, 6))
+        {
+            Configuration.PrivatePlayerReverifyCooldownHours = Math.Clamp(privateCd, 1, 8760);
+            Configuration.Save();
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("How often to re-attempt an adventure-plate lookup for players whose plate is hidden. Higher = fewer wasted requests, but slower to notice if they make their plate public."));
         }
 
         var fflogsOverlay = Configuration.EnableFFLogsIntegrationOverlay;
         if (ImGui.Checkbox(
-                "Enable FFLogs Integration (configure in FFLogs Integration tab)",
+                Loc.T("Enable FFLogs Integration (configure in FFLogs Integration tab)"),
                 ref fflogsOverlay))
         {
             Configuration.EnableFFLogsIntegrationOverlay = fflogsOverlay;
             Configuration.Save();
         }
 
-        var tomestone = Configuration.EnableTomestoneIntegration;
-        if (ImGui.Checkbox(
-                "Enable Tomestone Integration (configure API key in Tomestone Integration tab)",
-                ref tomestone))
+        // Tomestone.gg has no Korean data — disable the toggle entirely on the KR client.
+        using (new ImGuiDisabledScope(PassportCheckerReborn.IsKoreanClient))
         {
-            Configuration.EnableTomestoneIntegration = tomestone;
-            Configuration.Save();
+            var tomestone = Configuration.EnableTomestoneIntegration;
+            if (ImGui.Checkbox(
+                    Loc.T("Enable Tomestone Integration (configure API key in Tomestone Integration tab)"),
+                    ref tomestone))
+            {
+                Configuration.EnableTomestoneIntegration = tomestone;
+                Configuration.Save();
+            }
+        }
+        if (PassportCheckerReborn.IsKoreanClient && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(Loc.T("Tomestone.gg has no data for the Korean data centres, so it's unavailable on the Korean client."));
         }
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Party List Overlay");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("Party List Overlay"));
         ImGui.Spacing();
 
         var partyListOverlay = Configuration.ShowPartyListOverlay;
-        if (ImGui.Checkbox("Show Info for Current Party Members", ref partyListOverlay))
+        if (ImGui.Checkbox(Loc.T("Show Info for Current Party Members"), ref partyListOverlay))
         {
             Configuration.ShowPartyListOverlay = partyListOverlay;
             Configuration.Save();
@@ -314,15 +376,15 @@ public class MainWindow : Window, IDisposable
         if (Configuration.ShowPartyListOverlay)
         {
             ImGui.Indent(20f);
-            ImGui.TextWrapped(
+            ImGui.TextWrapped(Loc.T(
                 "Shows FFLogs and Tomestone data for your current party members in an overlay " +
                 "attached to the Party Members UI element. " +
                 "Requires FFLogs Integration and/or Tomestone Integration to be enabled. " +
-                "Includes a duty selector dropdown for encounter-specific lookups.");
+                "Includes a duty selector dropdown for encounter-specific lookups."));
 
             var positionNames = Enum.GetNames(typeof(PartyListOverlayPosition));
             var currentPosition = (int)Configuration.PartyListOverlayPosition;
-            ImGui.TextUnformatted("Overlay Position:");
+            ImGui.TextUnformatted(Loc.T("Overlay Position:"));
             ImGui.SameLine();
             ImGui.SetNextItemWidth(150f);
             if (ImGui.Combo("##party_list_position", ref currentPosition, positionNames, positionNames.Length))
@@ -332,14 +394,14 @@ public class MainWindow : Window, IDisposable
             }
 
             var hideInDuty = Configuration.HidePartyListInDuty;
-            if (ImGui.Checkbox("Hide Party List Overlay while in a duty", ref hideInDuty))
+            if (ImGui.Checkbox(Loc.T("Hide Party List Overlay while in a duty"), ref hideInDuty))
             {
                 Configuration.HidePartyListInDuty = hideInDuty;
                 Configuration.Save();
             }
 
             var hideInCombat = Configuration.HidePartyListInCombat;
-            if (ImGui.Checkbox("Hide Party List Overlay while in combat", ref hideInCombat))
+            if (ImGui.Checkbox(Loc.T("Hide Party List Overlay while in combat"), ref hideInCombat))
             {
                 Configuration.HidePartyListInCombat = hideInCombat;
                 Configuration.Save();
@@ -357,17 +419,24 @@ public class MainWindow : Window, IDisposable
     // ─────────────────────────────────────────────────────────────────────────
     private void DrawFFLogsTab()
     {
-        if (!ImGui.BeginTabItem("FFLogs Integration"))
+        if (!ImGui.BeginTabItem(Loc.T("FFLogs Integration")))
         {
             return;
         }
 
         ImGui.Spacing();
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "FFLogs API Configuration");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("FFLogs API Configuration"));
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextUnformatted("Client ID");
+        if (!Configuration.EnableFFLogsIntegrationOverlay)
+        {
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
+                Loc.T("This integration is off. Turn it on in the Overlay tab to show FFLogs in the overlay."));
+            ImGui.Spacing();
+        }
+
+        ImGui.TextUnformatted(Loc.T("Client ID"));
         ImGui.SetNextItemWidth(360f);
         if (ImGui.InputText("##fflogs_client_id", ref fFlogsClientIdInput, 128))
         {
@@ -376,7 +445,7 @@ public class MainWindow : Window, IDisposable
 
         ImGui.Spacing();
 
-        ImGui.TextUnformatted("Client Secret");
+        ImGui.TextUnformatted(Loc.T("Client Secret"));
         ImGui.SetNextItemWidth(360f);
         if (ImGui.InputText("##fflogs_client_secret", ref fFlogsClientSecretInput, 128,
                             ImGuiInputTextFlags.Password))
@@ -393,13 +462,14 @@ public class MainWindow : Window, IDisposable
             ImGui.BeginDisabled();
         }
 
-        if (ImGui.Button("Save & Test Credentials"))
+        if (ImGui.Button(Loc.T("Save & Test Credentials")))
         {
             Configuration.FFLogsClientId = fFlogsClientIdInput;
             Configuration.FFLogsClientSecret = fFlogsClientSecretInput;
             Configuration.Save();
             fFlogsTestResult = string.Empty;
             fFlogsTestInProgress = true;
+            fFlogsUsageRequested = false;  // re-fetch usage with the new credentials
 
             _ = TestFFLogsCredentialsAsync().ContinueWith(
                 t => PassportCheckerReborn.Log.Warning(t.Exception, "[PassportCheckerReborn] Unhandled error in credential test."),
@@ -410,7 +480,7 @@ public class MainWindow : Window, IDisposable
         {
             ImGui.EndDisabled();
             ImGui.SameLine();
-            ImGui.TextUnformatted("Testing…");
+            ImGui.TextUnformatted(Loc.T("Testing…"));
         }
 
         if (!string.IsNullOrEmpty(fFlogsTestResult))
@@ -423,51 +493,103 @@ public class MainWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+        var autoFetch = Configuration.AutoFetchFFLogsWhenResolved;
+        if (ImGui.Checkbox(Loc.T("Automatically look up FFLogs data once all names are resolved"), ref autoFetch))
+        {
+            Configuration.AutoFetchFFLogsWhenResolved = autoFetch;
+            Configuration.Save();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("Runs a lookup automatically when every name resolves. Spends FFLogs API points (see below)."));
+        }
+
+        // ── API usage (shown when credentials are configured) ──
+        if (!string.IsNullOrWhiteSpace(Configuration.FFLogsClientId) && !string.IsNullOrWhiteSpace(Configuration.FFLogsClientSecret))
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("API Usage"));
+            ImGui.Separator();
+            ImGui.Spacing();
+
+            // Prefer the counters piggybacked onto recent FFLogs traffic; only spend a dedicated request to
+            // seed the display when no query has carried them yet.
+            var usage = plugin.FFLogsService.GetCachedRateLimit();
+            if (usage is { } u)
+            {
+                ImGui.TextUnformatted(FormatFFLogsUsage(u.PointsSpentThisHour, u.LimitPerHour, u.PointsResetInSeconds));
+            }
+            else if (fFlogsUsageInProgress)
+            {
+                ImGui.TextUnformatted(Loc.T("Checking…"));
+            }
+            else
+            {
+                ImGui.TextUnformatted(fFlogsUsageText);
+            }
+
+            if (usage is null && !fFlogsUsageRequested && !fFlogsUsageInProgress)
+            {
+                fFlogsUsageRequested = true;
+                fFlogsUsageInProgress = true;
+                _ = RefreshFFLogsUsageAsync();
+            }
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton(Loc.T("Refresh##fflogs_usage")))
+            {
+                fFlogsUsageInProgress = true;
+                _ = RefreshFFLogsUsageAsync();
+            }
+        }
+
+        ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         // Collapsible "How to obtain credentials" guide
-        if (ImGui.CollapsingHeader("How to obtain FFLogs API credentials"))
+        if (ImGui.CollapsingHeader(Loc.T("How to obtain FFLogs API credentials")))
         {
             const string fflogsApiUrl = "https://www.fflogs.com/api/clients/";
             const string exampleClientName = "PassportCheckerReborn";
             const string exampleRedirectUrl = "https://example.com/";
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("1. Navigate to FFLogs API portal:");
+            ImGui.TextUnformatted(Loc.T("1. Navigate to FFLogs API portal:"));
             ImGui.SameLine();
-            if (ImGui.Button("Open FFLogs API Portal"))
+            if (ImGui.Button(Loc.T("Open FFLogs API Portal")))
             {
                 OpenUrl(fflogsApiUrl);
             }
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("2. Click 'Create Client' in the top-right corner.");
+            ImGui.TextUnformatted(Loc.T("2. Click 'Create Client' in the top-right corner."));
             ImGui.Spacing();
 
-            ImGui.TextUnformatted("3. Enter a client name (e.g. 'PassportCheckerReborn').");
+            ImGui.TextUnformatted(Loc.T("3. Enter a client name (e.g. 'PassportCheckerReborn')."));
             ImGui.SameLine();
-            if (ImGui.Button("Copy Client Name"))
+            if (ImGui.Button(Loc.T("Copy Client Name")))
             {
                 ImGui.SetClipboardText(exampleClientName);
             }
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("4. Provide any Redirect URL (e.g. 'https://example.com/').");
+            ImGui.TextUnformatted(Loc.T("4. Provide any Redirect URL (e.g. 'https://example.com/')."));
             ImGui.SameLine();
-            if (ImGui.Button("Copy Redirect URL"))
+            if (ImGui.Button(Loc.T("Copy Redirect URL")))
             {
                 ImGui.SetClipboardText(exampleRedirectUrl);
             }
 
             ImGui.Spacing();
-            ImGui.TextWrapped("5. Leave 'Public Client' unchecked. ");
+            ImGui.TextWrapped(Loc.T("5. Leave 'Public Client' unchecked. "));
             ImGui.Spacing();
-            ImGui.TextWrapped("6. Copy the generated Client ID/Secret to the fields above. ");
+            ImGui.TextWrapped(Loc.T("6. Copy the generated Client ID/Secret to the fields above. "));
             ImGui.Spacing();
-            ImGui.TextWrapped("7. Click 'Save & Test Credentials' to verify token status. ");
+            ImGui.TextWrapped(Loc.T("7. Click 'Save & Test Credentials' to verify token status. "));
             ImGui.Spacing();
-            ImGui.TextWrapped("Note: The Client Secret is only shown once. Keep it private.");
+            ImGui.TextWrapped(Loc.T("Note: The Client Secret is only shown once. Keep it private."));
         }
 
         ImGui.Spacing();
@@ -479,22 +601,29 @@ public class MainWindow : Window, IDisposable
     // ─────────────────────────────────────────────────────────────────────────
     private void DrawTomestoneTab()
     {
-        if (!ImGui.BeginTabItem("Tomestone Integration"))
+        if (!ImGui.BeginTabItem(Loc.T("Tomestone Integration")))
         {
             return;
         }
 
         ImGui.Spacing();
-        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), "Tomestone API Configuration");
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("Tomestone API Configuration"));
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextWrapped(
+        if (!Configuration.EnableTomestoneIntegration)
+        {
+            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f),
+                Loc.T("This integration is off. Turn it on in the Overlay tab to show Tomestone in the overlay."));
+            ImGui.Spacing();
+        }
+
+        ImGui.TextWrapped(Loc.T(
             "When enabled, clicking 'Tomestone' in the overlay will fetch prog point and " +
-            "activity data for the current duty from the Tomestone.gg API.");
+            "activity data for the current duty from the Tomestone.gg API."));
         ImGui.Spacing();
 
-        ImGui.TextUnformatted("API Key (Bearer token)");
+        ImGui.TextUnformatted(Loc.T("API Key (Bearer token)"));
         ImGui.SetNextItemWidth(360f);
         if (ImGui.InputText("##tomestone_api_key", ref tomestoneApiKeyInput, 256,
                             ImGuiInputTextFlags.Password))
@@ -503,7 +632,7 @@ public class MainWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("Save##ts_save"))
+        if (ImGui.Button(Loc.T("Save##ts_save")))
         {
             Configuration.TomestoneApiKey = tomestoneApiKeyInput;
             Configuration.Save();
@@ -514,29 +643,138 @@ public class MainWindow : Window, IDisposable
         ImGui.Spacing();
 
         // Collapsible "How to obtain your API key" guide
-        if (ImGui.CollapsingHeader("How to obtain a Tomestone API key"))
+        if (ImGui.CollapsingHeader(Loc.T("How to obtain a Tomestone API key")))
         {
             const string tomestoneAccountUrl = "https://tomestone.gg/profile/account";
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("1. Navigate to Tomestone Account Settings:");
+            ImGui.TextUnformatted(Loc.T("1. Navigate to Tomestone Account Settings:"));
             ImGui.SameLine();
-            if (ImGui.Button("Open Tomestone Account Page"))
+            if (ImGui.Button(Loc.T("Open Tomestone Account Page")))
             {
                 OpenUrl(tomestoneAccountUrl);
             }
 
             ImGui.Spacing();
-            ImGui.TextWrapped("2. Scroll down to the \"API access token\" section.");
+            ImGui.TextWrapped(Loc.T("2. Scroll down to the \"API access token\" section."));
             ImGui.Spacing();
-            ImGui.TextWrapped("3. Click \"Generate access token\".");
+            ImGui.TextWrapped(Loc.T("3. Click \"Generate access token\"."));
             ImGui.Spacing();
-            ImGui.TextWrapped("4. Copy the generated token and paste it into the field above.");
+            ImGui.TextWrapped(Loc.T("4. Copy the generated token and paste it into the field above."));
             ImGui.Spacing();
-            ImGui.TextWrapped("5. Click 'Save' to store your API key.");
+            ImGui.TextWrapped(Loc.T("5. Click 'Save' to store your API key."));
             ImGui.Spacing();
-            ImGui.TextWrapped("Note: Keep your API token private. It grants access to your Tomestone account data.");
+            ImGui.TextWrapped(Loc.T("Note: Keep your API token private. It grants access to your Tomestone account data."));
         }
+
+        ImGui.Spacing();
+        ImGui.EndTabItem();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PlayerTrack Integration Tab
+    // ─────────────────────────────────────────────────────────────────────────
+    private void DrawPlayerTrackTab()
+    {
+        if (!ImGui.BeginTabItem(Loc.T("PlayerTrack")))
+        {
+            return;
+        }
+
+        ImGui.Spacing();
+        ImGui.TextColored(new Vector4(1.0f, 0.85f, 0.0f, 1.0f), Loc.T("PlayerTrack Integration"));
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextWrapped(Loc.T(
+            "When enabled, party members whose name can't be read from Party Finder packets or the " +
+            "adventure plate are looked up in the PlayerTrack plugin's local database (read-only). " +
+            "This can recover names of players who hide their adventure plate, as long as you have " +
+            "encountered them before."));
+        ImGui.Spacing();
+
+        var svc = plugin.PlayerTrackService;
+        var (installed, loaded) = svc.GetPluginStatus();
+        var dbExists = svc.DatabaseExists;
+
+        var green = new Vector4(0.2f, 0.8f, 0.2f, 1.0f);
+        var red = new Vector4(0.9f, 0.3f, 0.3f, 1.0f);
+        var grey = new Vector4(0.6f, 0.6f, 0.6f, 1.0f);
+
+        ImGui.TextUnformatted(Loc.T("Status:"));
+        ImGui.Indent(12f);
+        ImGui.TextColored(installed ? green : red, installed ? Loc.T("PlayerTrack plugin installed") : Loc.T("PlayerTrack plugin not found"));
+        ImGui.TextColored(loaded ? green : grey, loaded ? Loc.T("PlayerTrack is loaded") : Loc.T("PlayerTrack not currently loaded"));
+        ImGui.TextColored(dbExists ? green : red, dbExists ? Loc.T("Database found") : Loc.T("Database not found"));
+        if (dbExists)
+        {
+            ImGui.TextColored(grey, svc.DatabasePath);
+        }
+        ImGui.Unindent(12f);
+
+        if (!dbExists)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(red, Loc.T("Integration is inactive: the PlayerTrack database was not found."));
+            ImGui.TextWrapped(Loc.T("Install and run PlayerTrack at least once so it builds its database, then reopen this window."));
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var enabled = Configuration.EnablePlayerTrackIntegration;
+        if (ImGui.Checkbox(Loc.T("Enable PlayerTrack name resolution"), ref enabled))
+        {
+            Configuration.EnablePlayerTrackIntegration = enabled;
+            Configuration.Save();
+        }
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(Loc.T("Reads PlayerTrack's database (read-only) to resolve otherwise-unknown party member names."));
+        }
+
+        using (new ImGuiDisabledScope(!Configuration.EnablePlayerTrackIntegration))
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted(Loc.T("Resolution priority:"));
+
+            var options = new[]
+            {
+                Loc.T("Adventure Plate first (freshest)"),
+                Loc.T("PlayerTrack first (fastest)"),
+            };
+            var current = (int)Configuration.PlayerTrackPriority;
+            ImGui.SetNextItemWidth(280f);
+            if (ImGui.Combo("##pt_priority", ref current, options, options.Length))
+            {
+                Configuration.PlayerTrackPriority = (PlayerTrackResolutionPriority)current;
+                Configuration.Save();
+            }
+
+            ImGui.Indent(12f);
+            if (Configuration.PlayerTrackPriority == PlayerTrackResolutionPriority.CharaCardFirst)
+            {
+                ImGui.TextWrapped(Loc.T(
+                    "Tries the live adventure plate first (most up-to-date name). " +
+                    "If the plate is hidden or the lookup fails, falls back to PlayerTrack."));
+            }
+            else
+            {
+                ImGui.TextWrapped(Loc.T(
+                    "Uses PlayerTrack's stored name first (instant, no network request, works for hidden plates). " +
+                    "Only queries the adventure plate when PlayerTrack has no record. " +
+                    "Note: PlayerTrack data can be stale if the player has since renamed or transferred worlds."));
+            }
+            ImGui.Unindent(12f);
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextWrapped(Loc.T(
+            "Names resolved via PlayerTrack are marked with a [PT] tag in the overlay. Hover a member's " +
+            "name (or the tag) to see the name's source, how old the cached data is, and any previous names."));
 
         ImGui.Spacing();
         ImGui.EndTabItem();
@@ -547,58 +785,137 @@ public class MainWindow : Window, IDisposable
     // ─────────────────────────────────────────────────────────────────────────
     private void DrawAboutTab()
     {
-        if (!ImGui.BeginTabItem("About"))
+        if (!ImGui.BeginTabItem(Loc.T("About")))
         {
             return;
         }
 
         ImGui.Spacing();
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), "Passport Checker Reborn");
-        ImGui.TextUnformatted("An open-source Party Finder enhancement plugin for Final Fantasy XIV.");
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), Loc.T("Passport Checker Reborn") + " (Custom)");
+        ImGui.TextUnformatted(Loc.T("An open-source Party Finder enhancement plugin for Final Fantasy XIV."));
         ImGui.Spacing();
 
-        ImGui.TextUnformatted("Author:  The Combat Reborn Team - LTS");
+        ImGui.TextUnformatted(Loc.T("Author:  The Combat Reborn Team - LTS"));
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextWrapped(
+        ImGui.TextWrapped(Loc.T(
             "Passport Checker Reborn is an open-source alternative to the PFFinder plugin. " +
             "It shows a member-info overlay alongside party finder listings, integrates with " +
             "Tomestone.gg and FFLogs for quick prog-point lookups, and offers quality-of-life improvements " +
-            "to the party finder UI.");
+            "to the party finder UI."));
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextWrapped(
+        ImGui.TextWrapped(Loc.T(
             "Commands:\n" +
-            "  /pfcheck           – Toggle the main overlay / status window.\n" +
-            "  /pcrparty           – Toggle the party list overlay window.\n");
+            "  /pfchecker (or /pcr)  – Open the settings window.\n" +
+            "  /pcrparty  – Toggle the party list overlay window.\n"));
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), "Cache Statistics");
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), Loc.T("Overlay markers"));
         ImGui.Spacing();
-        ImGui.TextUnformatted($"Resolved CIDs:          {plugin.CidCache.Count}");
-        ImGui.TextUnformatted($"Blacklisted players:    {plugin.BlacklistCache.Count}");
+
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 0.9f, 1.0f), "[PT]");
         ImGui.SameLine();
-        if (ImGui.SmallButton("Clear Cache##bl_clear"))
+        ImGui.TextUnformatted(Loc.T("Name recovered from the PlayerTrack database"));
+
+        ImGui.TextColored(new Vector4(0.9f, 0.2f, 0.2f, 1.0f), "[BL]");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(Loc.T("On your in-game blacklist"));
+
+        ImGui.TextColored(new Vector4(0.5f, 0.5f, 0.5f, 1.0f), Loc.T("[Private]"));
+        ImGui.SameLine();
+        ImGui.TextUnformatted(Loc.T("Adventure plate is hidden"));
+
+        ImGui.TextColored(new Vector4(0.85f, 0.55f, 0.25f, 1.0f), Loc.T("Lookup failed"));
+        ImGui.SameLine();
+        ImGui.TextUnformatted(Loc.T("FFLogs request failed — refresh to retry"));
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), Loc.T("Cache Statistics"));
+        ImGui.Spacing();
+        ImGui.TextUnformatted($"{Loc.T("Resolved CIDs")}:  {plugin.CidCache.Count}");
+        ImGui.SameLine();
+        // Resolved names are kept indefinitely by design, so guard the wipe behind SHIFT + a confirmation
+        // dialog to make an accidental click impossible.
+        var cidShiftHeld = ImGui.GetIO().KeyShift;
+        using (new ImGuiDisabledScope(!cidShiftHeld))
+        {
+            if (ImGui.SmallButton(Loc.T("Clear Cache##cid_clear")))
+            {
+                ImGui.OpenPopup(CidClearPopupId);
+            }
+        }
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(Loc.T(
+                "Deletes all stored Content ID → name/world mappings and their name history from disk. " +
+                "Names are re-learned as you encounter players again.\n" +
+                "Hold SHIFT and click to enable this button."));
+        }
+
+        ImGui.TextUnformatted($"{Loc.T("Blacklisted players")}:  {plugin.BlacklistCache.Count}");
+        ImGui.SameLine();
+        if (ImGui.SmallButton(Loc.T("Clear Cache##bl_clear")))
         {
             plugin.BlacklistCache.Clear();
             plugin.PartyFinderManager.ForceRefreshBlacklist();
         }
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Clears the persisted blacklist cache, then re-reads from the game.");
+            ImGui.SetTooltip(Loc.T("Clears the persisted blacklist cache, then re-reads from the game."));
         }
+
+        DrawCidClearConfirmPopup();
 
         ImGui.Spacing();
         ImGui.EndTabItem();
+    }
+
+    private const string CidClearPopupId = "###cid_clear_confirm";
+
+    /// <summary>Confirmation modal for wiping the resolved-name (CID) cache. Opened from the About tab.</summary>
+    private void DrawCidClearConfirmPopup()
+    {
+        var center = ImGui.GetMainViewport().GetCenter();
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+
+        if (!ImGui.BeginPopupModal(Loc.T("Clear cached names?") + CidClearPopupId,
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            return;
+        }
+
+        ImGui.TextUnformatted(string.Format(
+            Loc.T("This permanently deletes all {0} stored names and their history. This cannot be undone."),
+            plugin.CidCache.Count));
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (ImGui.Button(Loc.T("Delete"), new Vector2(120, 0)))
+        {
+            plugin.CidCache.Clear();
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.T("Cancel"), new Vector2(120, 0)))
+        {
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -622,6 +939,30 @@ public class MainWindow : Window, IDisposable
         finally
         {
             fFlogsTestInProgress = false;
+        }
+    }
+
+    private static string FormatFFLogsUsage(double spent, int limit, int resetSeconds)
+        => string.Format(Loc.T("{0} / {1} points used this hour (resets in {2} min)"),
+            spent.ToString("F0"), limit, Math.Max(0, resetSeconds / 60));
+
+    private async System.Threading.Tasks.Task RefreshFFLogsUsageAsync()
+    {
+        try
+        {
+            var rl = await plugin.FFLogsService.GetRateLimitAsync();
+            fFlogsUsageText = rl is { } r
+                ? FormatFFLogsUsage(r.PointsSpentThisHour, r.LimitPerHour, r.PointsResetInSeconds)
+                : Loc.T("Could not retrieve API usage.");
+        }
+        catch (Exception ex)
+        {
+            fFlogsUsageText = Loc.T("Could not retrieve API usage.");
+            PassportCheckerReborn.Log.Warning(ex, "[PassportCheckerReborn] FFLogs usage check failed.");
+        }
+        finally
+        {
+            fFlogsUsageInProgress = false;
         }
     }
 

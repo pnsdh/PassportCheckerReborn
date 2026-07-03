@@ -1,0 +1,78 @@
+name: Build & Release
+
+# Push to main → if the <Version> in the .csproj is one that hasn't been
+# released yet, build the plugin and publish a GitHub Release with latest.zip.
+# Ordinary pushes that don't change the version just build-check and skip the
+# release. You can also run it manually from the Actions tab.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases + tags with the built-in token
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Read plugin version from csproj
+        id: ver
+        shell: pwsh
+        run: |
+          [xml]$csproj = Get-Content "PassportCheckerReborn/PassportCheckerReborn.csproj"
+          $version = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+          if (-not $version) { throw "No <Version> found in csproj" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Plugin version: $version"
+
+      - name: Check whether this version was already released
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `gh release view` exits non-zero when the release doesn't exist; the `if`
+          # absorbs that so the step itself still ends successfully.
+          if gh release view "${{ steps.ver.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.ver.outputs.tag }} already exists — will skip publishing."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release for ${{ steps.ver.outputs.tag }} yet — will publish."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Dalamud (dev distribution)
+        if: steps.check.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $dalamud = "$env:AppData\XIVLauncher\addon\Hooks\dev"
+          New-Item -ItemType Directory -Force -Path $dalamud | Out-Null
+          # Stable track. If a build ever fails on a Dalamud version mismatch,
+          # switch this to the staging track:
+          #   https://goatcorp.github.io/dalamud-distrib/stg/latest.zip
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile "dalamud.zip"
+          Expand-Archive -Path "dalamud.zip" -DestinationPath $dalamud -Force
+
+      - name: Build (Release)
+        if: steps.check.outputs.skip == 'false'
+        run: dotnet build "PassportCheckerReborn/PassportCheckerReborn.csproj" -c Release --nologo
+
+      - name: Publish GitHub Release
+        if: steps.check.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: |
+            PassportCheckerReborn/bin/Release/PassportCheckerReborn/latest.zip
+            PassportCheckerReborn/bin/Release/PassportCheckerReborn/PassportCheckerReborn.json

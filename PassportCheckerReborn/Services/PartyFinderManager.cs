@@ -43,8 +43,91 @@ public sealed class PartyFinderManager : IDisposable
     private readonly PassportCheckerReborn plugin;
 
     /// <summary>Players visible in the currently selected PF listing.</summary>
-    public IReadOnlyList<Windows.PartyMemberInfo> CurrentMembers => currentMembers;
+    /// <summary>An immutable snapshot of the current members — safe to enumerate on the UI thread.</summary>
+    public IReadOnlyList<Windows.PartyMemberInfo> CurrentMembers => MembersSnapshot();
+
     private readonly List<Windows.PartyMemberInfo> currentMembers = [];
+
+    // currentMembers is read on the framework/UI thread(s) and structurally mutated (Clear/Add/RemoveAt) plus
+    // element-replaced from the background resolve task, so all access goes through membersLock. The helpers
+    // below are the only touch points, and none holds the lock across an await.
+    private readonly object membersLock = new();
+
+    private Windows.PartyMemberInfo[] MembersSnapshot()
+    {
+        lock (membersLock)
+        {
+            return currentMembers.ToArray();
+        }
+    }
+
+    private int MembersCount()
+    {
+        lock (membersLock)
+        {
+            return currentMembers.Count;
+        }
+    }
+
+    private bool TryGetMember(int index, out Windows.PartyMemberInfo member)
+    {
+        lock (membersLock)
+        {
+            if (index >= 0 && index < currentMembers.Count)
+            {
+                member = currentMembers[index];
+                return true;
+            }
+
+            member = default!;
+            return false;
+        }
+    }
+
+    /// <summary>Replaces slot [index] only if it still holds <paramref name="expectedContentId"/> (re-checked under lock).</summary>
+    private bool ReplaceMemberIfMatch(int index, ulong expectedContentId, Windows.PartyMemberInfo replacement)
+    {
+        lock (membersLock)
+        {
+            if (index >= 0 && index < currentMembers.Count && currentMembers[index].ContentId == expectedContentId)
+            {
+                currentMembers[index] = replacement;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    private bool RemoveMemberIfMatch(int index, ulong expectedContentId)
+    {
+        lock (membersLock)
+        {
+            if (index >= 0 && index < currentMembers.Count && currentMembers[index].ContentId == expectedContentId)
+            {
+                currentMembers.RemoveAt(index);
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    private void AddMember(Windows.PartyMemberInfo member)
+    {
+        lock (membersLock)
+        {
+            currentMembers.Add(member);
+        }
+    }
+
+    private void ClearMembers()
+    {
+        lock (membersLock)
+        {
+            currentMembers.Clear();
+        }
+    }
 
     /// <summary>Whether the PF detail addon is currently open.</summary>
     public bool IsDetailOpen { get; private set; }
@@ -77,13 +160,14 @@ public sealed class PartyFinderManager : IDisposable
     {
         get
         {
-            for (var i = 0; i < currentMembers.Count; i++)
+            foreach (var m in MembersSnapshot())
             {
-                if (currentMembers[i].Name.StartsWith(UnresolvedNamePrefix))
+                if (m.Name.StartsWith(UnresolvedNamePrefix))
                 {
                     return true;
                 }
             }
+
             return false;
         }
     }
@@ -96,14 +180,6 @@ public sealed class PartyFinderManager : IDisposable
     private int autoRefreshCountdown;
 
     // ── Known-player cache ───────────────────────────────────────────────────
-    /// <summary>
-    /// Set of "Name@World" strings for players the local user has previously
-    /// grouped with. Persisted in memory only (resets on plugin reload).
-    /// Populated from friends list + encounter history once member discovery
-    /// is implemented.
-    /// </summary>
-    public ConcurrentDictionary<string, bool> KnownPlayers { get; } = new();
-
     // ── Blacklist cache ───────────────────────────────────────────────────────
     /// <summary>
     /// Set of "Name@World" strings read from the game's BlackList addon (node #9).
@@ -181,6 +257,32 @@ public sealed class PartyFinderManager : IDisposable
 
     /// <summary>Throttle interval between CharaCard requests (milliseconds).</summary>
     private const int CharaCardThrottleMs = 900;
+
+    /// <summary>A cached name older than this is considered stale and eligible for re-verification (configurable).</summary>
+    private TimeSpan StaleNameThreshold => TimeSpan.FromDays(Math.Max(1, plugin.Configuration.StaleNameThresholdDays));
+
+    /// <summary>Minimum time between re-verification attempts for the same stale name, success or failure (configurable).</summary>
+    private TimeSpan ReverifyCooldown => TimeSpan.FromHours(Math.Max(1, plugin.Configuration.ReverifyCooldownHours));
+
+    /// <summary>
+    /// ContentId → last time a CharaCard lookup found the plate hidden. Throttles doomed re-attempts
+    /// for private players. Session-scoped (resets on reload, so a restart re-checks once); the cooldown
+    /// duration is configurable via <see cref="Configuration.PrivatePlayerReverifyCooldownHours"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<ulong, DateTime> lastHiddenPlateAttempt = new();
+
+    /// <summary>Whether a CharaCard lookup for this player was recently found hidden (within the cooldown).</summary>
+    private bool IsRecentlyHiddenPlate(ulong contentId)
+    {
+        if (contentId == 0)
+        {
+            return false;
+        }
+
+        var cooldown = TimeSpan.FromHours(Math.Max(1, plugin.Configuration.PrivatePlayerReverifyCooldownHours));
+        return lastHiddenPlateAttempt.TryGetValue(contentId, out var last)
+            && DateTime.UtcNow - last < cooldown;
+    }
 
     /// <summary>Prefix used for members whose names could not be resolved from cache.</summary>
     public const string UnresolvedNamePrefix = "Player ";
@@ -357,7 +459,11 @@ public sealed class PartyFinderManager : IDisposable
     {
         try
         {
-            currentDetailedPost = *listingData;
+            // Guard the native pointer — a null deref here is an uncatchable AV that would crash the game.
+            if (listingData != null)
+            {
+                currentDetailedPost = *listingData;
+            }
         }
         catch (Exception ex)
         {
@@ -370,7 +476,7 @@ public sealed class PartyFinderManager : IDisposable
     /// <summary>
     /// Attempts to resolve a content ID to a player name and world using the PF listing cache.
     /// </summary>
-    public (string Name, string World)? ResolvePlayerFromCache(ulong contentId)
+    public (string Name, string World, NameSource Source)? ResolvePlayerFromCache(ulong contentId)
     {
         if (contentId == 0)
         {
@@ -382,7 +488,7 @@ public sealed class PartyFinderManager : IDisposable
         {
             var worldSheet = PassportCheckerReborn.DataManager.GetExcelSheet<World>();
             var worldName = worldSheet?.GetRowOrDefault(cached.WorldId)?.Name.ToString() ?? string.Empty;
-            return (cached.Name, worldName);
+            return (cached.Name, worldName, NameSource.Live);
         }
 
         // Fall back to the persistent CID cache for CIDs seen in previous sessions.
@@ -392,7 +498,7 @@ public sealed class PartyFinderManager : IDisposable
         if (plugin.CidCache.TryGet(contentId, out var persisted) && persisted != null
             && !string.IsNullOrEmpty(persisted.Name))
         {
-            return (persisted.Name, persisted.WorldName);
+            return (persisted.Name, persisted.WorldName, persisted.Source);
         }
 
         return null;
@@ -409,18 +515,23 @@ public sealed class PartyFinderManager : IDisposable
     /// </summary>
     private unsafe void CharaCardPacketHandlerDetour(CharaCard* thisPtr, CharaCardPacket* packet)
     {
-        try
+        // Guard the native pointer before dereferencing — a null packet would be an uncatchable access
+        // violation the try/catch can't save, so fall straight through to the original in that case.
+        if (packet != null)
         {
-            var nameSpan = packet->Name;
-            var name = nameSpan.Length > 4
-                ? System.Text.Encoding.UTF8.GetString(nameSpan[4..]).TrimEnd('\0')
-                : string.Empty;
+            try
+            {
+                var nameSpan = packet->Name;
+                var name = nameSpan.Length > 4
+                    ? System.Text.Encoding.UTF8.GetString(nameSpan[4..]).TrimEnd('\0')
+                    : string.Empty;
 
-            OnCharaCardReceived?.Invoke(new CharaCardResult(packet->ContentId, name, packet->WorldId, false));
-        }
-        catch (Exception ex)
-        {
-            PassportCheckerReborn.Log.Warning(ex, "[PCR:CharaCard] Detour error.");
+                OnCharaCardReceived?.Invoke(new CharaCardResult(packet->ContentId, name, packet->WorldId, false));
+            }
+            catch (Exception ex)
+            {
+                PassportCheckerReborn.Log.Warning(ex, "[PCR:CharaCard] Detour error.");
+            }
         }
 
         charaCardPacketHandlerHook!.Original(thisPtr, packet);
@@ -439,7 +550,7 @@ public sealed class PartyFinderManager : IDisposable
         // Only suppress error messages during active player name resolution
         if (isResolvingPlayerNames && logMessageId is > 5854 and < 5861)
         {
-            PassportCheckerReborn.Log.Information(
+            PassportCheckerReborn.Log.Debug(
                 $"[PCR:CharaCard] ShowLogMessage suppressed (id={logMessageId}) — adventure plate hidden/unavailable, signalling private.");
             // Signal with IsAdventurePlateHidden=true so the awaiter can distinguish
             // a deliberately hidden plate from a generic timeout/failure.
@@ -492,7 +603,13 @@ public sealed class PartyFinderManager : IDisposable
             {
                 unsafe
                 {
-                    CharaCard.Instance()->RequestCharaCardForContentId(contentId);
+                    // Guard against a null instance (game not fully ready): skip the request and let the
+                    // 5s timeout below resolve this lookup as a failure rather than risk a null-deref crash.
+                    var instance = CharaCard.Instance();
+                    if (instance != null)
+                    {
+                        instance->RequestCharaCardForContentId(contentId);
+                    }
                 }
             });
 
@@ -524,120 +641,322 @@ public sealed class PartyFinderManager : IDisposable
 
     /// <summary>
     /// Asynchronously resolves names for members that could not be resolved from
-    /// the PF listing cache. Uses the CharaCard (adventure plate) lookup.
-    /// Updates the member list in-place when a name is resolved.
+    /// the PF listing cache. Depending on <see cref="Configuration.PlayerTrackPriority"/>,
+    /// consults the PlayerTrack database and the CharaCard (adventure plate) lookup in the
+    /// configured order. Updates the member list in-place when a name is resolved.
     /// </summary>
     private async Task ResolveUnresolvedMembersAsync(CancellationToken ct)
     {
-        var unresolvedCount = 0;
-        for (var ui = 0; ui < currentMembers.Count; ui++)
-        {
-            if (currentMembers[ui].Name.StartsWith(UnresolvedNamePrefix))
-            {
-                unresolvedCount++;
-            }
-        }
+        var cfg = plugin.Configuration;
+        var ptEnabled = cfg.EnablePlayerTrackIntegration && plugin.PlayerTrackService?.IsUsable == true;
+        var ptFirst = ptEnabled && cfg.PlayerTrackPriority == PlayerTrackResolutionPriority.PlayerTrackFirst;
+        var ptFallback = ptEnabled && cfg.PlayerTrackPriority == PlayerTrackResolutionPriority.CharaCardFirst;
+        var charaCardAvailable = charaCardPacketHandlerHook is { IsEnabled: true };
 
         var resolved = false;
 
-        for (var i = 0; i < currentMembers.Count; i++)
+        // ── Phase 0: PlayerTrack-first pass (or the only source when CharaCard is unavailable) ──
+        // Runs off the main thread since it performs blocking SQLite reads.
+        if (ptFirst || (ptEnabled && !charaCardAvailable))
         {
-            if (ct.IsCancellationRequested)
-            {
-                PassportCheckerReborn.Log.Information("[PCR:Resolve] Batch cancelled.");
-                return;
-            }
-
-            var member = currentMembers[i];
-            if (member.ContentId == 0 || !member.Name.StartsWith(UnresolvedNamePrefix))
-            {
-                continue;
-            }
-
-            PassportCheckerReborn.Log.Information(
-                $"[PCR:Resolve] Attempting CharaCard lookup for slot {i}");
-
             try
             {
-                var info = await RequestCharaCardAsync(member.ContentId, ct);
-                if (ct.IsCancellationRequested)
+                await Task.Run(() =>
                 {
-                    PassportCheckerReborn.Log.Information("[PCR:Resolve] Cancelled after CharaCard request.");
-                    return;
-                }
+                    for (var i = 0; i < MembersCount(); i++)
+                    {
+                        if (ct.IsCancellationRequested)
+                        {
+                            return;
+                        }
 
-                if (info is { IsAdventurePlateHidden: true })
-                {
-                    // ShowLogMessage was suppressed — player deliberately hid their adventure plate.
-                    // Keep the slot with a "Private Player N" label so the PF row stays intact.
-                    if (i < currentMembers.Count && currentMembers[i].ContentId == member.ContentId)
-                    {
-                        var slotNumber = i + 1;
-                        PassportCheckerReborn.Log.Information(
-                            $"[PCR:Resolve] Adventure plate hidden for slot {i} — marking as Private Player {slotNumber}.");
-                        currentMembers[i] = member with { Name = $"Private Player {slotNumber}", IsPrivate = true };
-                    }
-                }
-                else if (info is { } resolvedInfo && !string.IsNullOrEmpty(resolvedInfo.Name))
-                {
-                    var worldSheet = PassportCheckerReborn.DataManager.GetExcelSheet<World>();
-                    var worldName = worldSheet?.GetRowOrDefault(resolvedInfo.WorldId)?.Name.ToString() ?? string.Empty;
+                        if (!TryGetMember(i, out var m))
+                        {
+                            break; // list shrank concurrently (detail pane closed) — stop.
+                        }
 
-                    var existingListingId = pfListingPlayerCache.TryGetValue(member.ContentId, out var prev) ? prev.ListingId : 0ul;
-                    pfListingPlayerCache[member.ContentId] = (resolvedInfo.Name, resolvedInfo.WorldId, existingListingId);
-                    plugin.CidCache.Set(member.ContentId, resolvedInfo.Name, resolvedInfo.WorldId, worldName);
-                    resolved = true;
+                        if (m.ContentId == 0 || !m.Name.StartsWith(UnresolvedNamePrefix))
+                        {
+                            continue;
+                        }
 
-                    if (i < currentMembers.Count && currentMembers[i].ContentId == member.ContentId)
-                    {
-                        currentMembers[i] = member with { Name = resolvedInfo.Name, World = worldName };
+                        TryApplyPlayerTrack(i, m);
                     }
-                }
-                else if (info is { ContentId: not 0 })
-                {
-                    // The adventure plate response came back with a matching CID but an empty name.
-                    // This can happen for cross-DC players or certain account types whose plate
-                    // does not include a name in the packet. Keep the slot as Unresolved Player so
-                    // the PF row stays intact rather than silently removing a valid member.
-                    if (i < currentMembers.Count && currentMembers[i].ContentId == member.ContentId)
-                    {
-                        var slotNumber = i + 1;
-                        PassportCheckerReborn.Log.Information(
-                            $"[PCR:Resolve] Adventure plate returned empty name for slot {i}) — marking as Unresolved Player {slotNumber}.");
-                        currentMembers[i] = member with { Name = $"Unresolved Player {slotNumber}" };
-                    }
-                }
-                else
-                {
-                    // Generic timeout or unrecognised failure — unable to resolve, remove the slot.
-                    if (i < currentMembers.Count && currentMembers[i].ContentId == member.ContentId)
-                    {
-                        PassportCheckerReborn.Log.Information(
-                            $"[PCR:Resolve] Unable to resolve player info for slot {i} — removing.");
-                        currentMembers.RemoveAt(i);
-                        i--;
-                    }
-                }
+                }, ct);
             }
             catch (OperationCanceledException)
             {
-                PassportCheckerReborn.Log.Information("[PCR:Resolve] OperationCanceledException — stopping batch.");
                 return;
-            }
-            catch (Exception ex)
-            {
-                PassportCheckerReborn.Log.Warning(ex,
-                    $"[PCR:Resolve] Exception resolving.");
             }
         }
 
-        PassportCheckerReborn.Log.Information(
-            $"[PCR:Resolve] Batch complete — resolved, final member count={currentMembers.Count}.");
+        if (ct.IsCancellationRequested)
+        {
+            return;
+        }
+
+        // ── Phase 1: CharaCard for still-unresolved members ──
+        if (charaCardAvailable)
+        {
+            for (var i = 0; i < MembersCount(); i++)
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    PassportCheckerReborn.Log.Debug("[PCR:Resolve] Batch cancelled.");
+                    return;
+                }
+
+                if (!TryGetMember(i, out var member))
+                {
+                    break;
+                }
+
+                if (member.ContentId == 0 || !member.Name.StartsWith(UnresolvedNamePrefix))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    // Throttle: if this player's plate was recently found hidden, skip the doomed
+                    // CharaCard request (still try the PlayerTrack fallback below, then mark Private).
+                    var recentlyHidden = IsRecentlyHiddenPlate(member.ContentId);
+
+                    CharaCardResult? info = null;
+                    if (!recentlyHidden)
+                    {
+                        PassportCheckerReborn.Log.Debug($"[PCR:Resolve] Attempting CharaCard lookup for slot {i}");
+                        info = await RequestCharaCardAsync(member.ContentId, ct);
+                        if (ct.IsCancellationRequested)
+                        {
+                            PassportCheckerReborn.Log.Debug("[PCR:Resolve] Cancelled after CharaCard request.");
+                            return;
+                        }
+                    }
+
+                    if (info is { } resolvedInfo && !string.IsNullOrEmpty(resolvedInfo.Name))
+                    {
+                        // CharaCard succeeded — freshest possible data; clear the hidden throttle and cache it.
+                        lastHiddenPlateAttempt.TryRemove(member.ContentId, out _);
+
+                        var worldSheet = PassportCheckerReborn.DataManager.GetExcelSheet<World>();
+                        var worldName = worldSheet?.GetRowOrDefault(resolvedInfo.WorldId)?.Name.ToString() ?? string.Empty;
+
+                        var existingListingId = pfListingPlayerCache.TryGetValue(member.ContentId, out var prev) ? prev.ListingId : 0ul;
+                        pfListingPlayerCache[member.ContentId] = (resolvedInfo.Name, resolvedInfo.WorldId, existingListingId);
+                        plugin.CidCache.Set(member.ContentId, resolvedInfo.Name, resolvedInfo.WorldId, worldName);
+                        resolved = true;
+
+                        ReplaceMemberIfMatch(i, member.ContentId, member with { Name = resolvedInfo.Name, World = worldName });
+                    }
+                    else if (ptFallback && TryApplyPlayerTrack(i, member))
+                    {
+                        // CharaCard couldn't resolve (hidden / empty / timeout) but PlayerTrack had a record.
+                    }
+                    else if (recentlyHidden || info is { IsAdventurePlateHidden: true })
+                    {
+                        // Adventure plate hidden — either freshly detected or still within the throttle window.
+                        // Record the attempt time only on a fresh detection so the cooldown can actually elapse.
+                        if (!recentlyHidden)
+                        {
+                            lastHiddenPlateAttempt[member.ContentId] = DateTime.UtcNow;
+                        }
+
+                        var slotNumber = i + 1;
+                        ReplaceMemberIfMatch(i, member.ContentId, member with { Name = $"Private Player {slotNumber}", IsPrivate = true });
+                    }
+                    else if (info is { ContentId: not 0 })
+                    {
+                        // The adventure plate response came back with a matching CID but an empty name.
+                        // This can happen for cross-DC players or certain account types whose plate
+                        // does not include a name in the packet. Keep the slot as Unresolved Player so
+                        // the PF row stays intact rather than silently removing a valid member.
+                        var slotNumber = i + 1;
+                        PassportCheckerReborn.Log.Information(
+                            $"[PCR:Resolve] Adventure plate returned empty name for slot {i}) — marking as Unresolved Player {slotNumber}.");
+                        ReplaceMemberIfMatch(i, member.ContentId, member with { Name = $"Unresolved Player {slotNumber}" });
+                    }
+                    else
+                    {
+                        // Generic timeout or unrecognised failure — unable to resolve, remove the slot.
+                        PassportCheckerReborn.Log.Information(
+                            $"[PCR:Resolve] Unable to resolve player info for slot {i} — removing.");
+                        if (RemoveMemberIfMatch(i, member.ContentId))
+                        {
+                            i--;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    PassportCheckerReborn.Log.Debug("[PCR:Resolve] OperationCanceledException — stopping batch.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    PassportCheckerReborn.Log.Warning(ex,
+                        $"[PCR:Resolve] Exception resolving.");
+                }
+            }
+        }
+
+        // ── Phase 2: re-verify stale cached names via CharaCard (throttled) ──
+        if (charaCardAvailable && cfg.EnableStaleNameReverification)
+        {
+            for (var i = 0; i < MembersCount(); i++)
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                if (!TryGetMember(i, out var member))
+                {
+                    break;
+                }
+
+                if (member.ContentId == 0 || member.IsPrivate
+                    || member.Name.StartsWith(UnresolvedNamePrefix) || member.Name.StartsWith(UnresolvedPlayerPrefix))
+                {
+                    continue;
+                }
+
+                if (!plugin.CidCache.ShouldReverify(member.ContentId, StaleNameThreshold, ReverifyCooldown))
+                {
+                    continue;
+                }
+
+                // Record the attempt up front so we back off even if the plate is hidden / times out.
+                plugin.CidCache.MarkVerifyAttempt(member.ContentId);
+
+                try
+                {
+                    var info = await RequestCharaCardAsync(member.ContentId, ct);
+                    if (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    if (info is { } r && !string.IsNullOrEmpty(r.Name))
+                    {
+                        var worldSheet = PassportCheckerReborn.DataManager.GetExcelSheet<World>();
+                        var worldName = worldSheet?.GetRowOrDefault(r.WorldId)?.Name.ToString() ?? string.Empty;
+
+                        var existingListingId = pfListingPlayerCache.TryGetValue(member.ContentId, out var prev) ? prev.ListingId : 0ul;
+                        pfListingPlayerCache[member.ContentId] = (r.Name, r.WorldId, existingListingId);
+                        // Set() refreshes LastSeen (clearing staleness) and records any rename into history.
+                        plugin.CidCache.Set(member.ContentId, r.Name, r.WorldId, worldName);
+                        resolved = true;
+
+                        var nameChanged = !string.Equals(r.Name, member.Name, StringComparison.Ordinal);
+                        if ((nameChanged || member.FromPlayerTrack)
+                            && ReplaceMemberIfMatch(i, member.ContentId,
+                                member with { Name = r.Name, World = worldName, FromPlayerTrack = false })
+                            && nameChanged)
+                        {
+                            PassportCheckerReborn.Log.Debug($"[PCR:Reverify] Slot {i} name refreshed to a newer value.");
+                        }
+                    }
+
+                    // Failure (hidden plate / timeout): keep the existing name; the back-off is already recorded.
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    PassportCheckerReborn.Log.Warning(ex, "[PCR:Reverify] Error re-verifying a stale name.");
+                }
+            }
+        }
+
+        PassportCheckerReborn.Log.Debug(
+            $"[PCR:Resolve] Batch complete — final member count={MembersCount()}.");
 
         if (resolved)
         {
             plugin.CidCache.Save();
         }
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> if any currently-resolved member has a cached name old enough to be
+    /// re-verified (and not within the retry cooldown). Cheap — reads only the in-memory cache.
+    /// </summary>
+    private bool AnyMemberNeedsReverify()
+    {
+        foreach (var m in MembersSnapshot())
+        {
+            if (m.ContentId == 0 || m.IsPrivate
+                || m.Name.StartsWith(UnresolvedNamePrefix) || m.Name.StartsWith(UnresolvedPlayerPrefix))
+            {
+                continue;
+            }
+
+            if (plugin.CidCache.ShouldReverify(m.ContentId, StaleNameThreshold, ReverifyCooldown))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Attempts to resolve <paramref name="member"/> (identified by ContentId) from the PlayerTrack
+    /// database and, if found, updates the slot in place with the name/world, marks it PlayerTrack-sourced,
+    /// and write-through caches the name (detail is retained in <c>PlayerTrackService</c>). Returns
+    /// <c>true</c> when a name was applied. Never throws.
+    /// </summary>
+    private bool TryApplyPlayerTrack(int index, Windows.PartyMemberInfo member)
+    {
+        try
+        {
+            var svc = plugin.PlayerTrackService;
+            if (svc is null || !plugin.Configuration.EnablePlayerTrackIntegration || !svc.IsUsable)
+            {
+                return false;
+            }
+
+            var rec = svc.Resolve(member.ContentId);
+            if (rec is null || string.IsNullOrEmpty(rec.Name))
+            {
+                return false;
+            }
+
+            // Persist the name into the CID cache (write-through, marked PlayerTrack-sourced) so future
+            // PF opens resolve instantly from cache instead of re-querying PlayerTrack / re-attempting
+            // doomed CharaCard lookups. Live data (PF packet / adventure plate) will overwrite it.
+            // PlayerTrack's own name history seeds the entry's previous-names list.
+            var seedHistory = new List<PreviousName>(rec.PreviousNames.Count);
+            foreach (var h in rec.PreviousNames)
+            {
+                seedHistory.Add(new PreviousName(h.Name, h.WorldId, h.WorldName, h.Changed));
+            }
+
+            plugin.CidCache.SetFromPlayerTrack(
+                member.ContentId, rec.Name, rec.WorldId, rec.WorldName, rec.LastSeen, seedHistory);
+
+            if (ReplaceMemberIfMatch(index, member.ContentId, member with
+                {
+                    Name = rec.Name,
+                    World = rec.WorldName,
+                    IsPrivate = false,
+                    FromPlayerTrack = true,
+                }))
+            {
+                PassportCheckerReborn.Log.Debug(
+                    $"[PCR:Resolve] Slot {index} resolved via PlayerTrack (last seen {rec.LastSeen:u}).");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, "[PCR:Resolve] PlayerTrack lookup failed.");
+        }
+
+        return false;
     }
 
     private void OnPFDetailSetup(AddonEvent type, AddonArgs args)
@@ -682,7 +1001,7 @@ public sealed class PartyFinderManager : IDisposable
 
         IsDetailOpen = false;
         plugin.PFWindow.IsOpen = false;
-        currentMembers.Clear();
+        ClearMembers();
         currentDetailedPost = null;
         CurrentDutyId = 0;
         CurrentDutyName = string.Empty;
@@ -716,7 +1035,8 @@ public sealed class PartyFinderManager : IDisposable
         // Reset auto-refresh timer when player manually refreshes
         if (plugin.Configuration.EnableAutomaticRefresh)
         {
-            autoRefreshCountdown = plugin.Configuration.AutoRefreshIntervalSeconds;
+            // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
+        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
         }
 
         TryProcessPendingRecruitment();
@@ -741,7 +1061,8 @@ public sealed class PartyFinderManager : IDisposable
             return;
         }
 
-        autoRefreshCountdown = plugin.Configuration.AutoRefreshIntervalSeconds;
+        // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
+        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
 
         autoRefreshTimer?.Dispose();
         autoRefreshTimer = new System.Timers.Timer(1000); // tick every second
@@ -777,7 +1098,8 @@ public sealed class PartyFinderManager : IDisposable
         }
 
         // Reset countdown
-        autoRefreshCountdown = plugin.Configuration.AutoRefreshIntervalSeconds;
+        // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
+        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
 
         // Request PF listing update on the framework thread (game API calls must
         // happen on the main thread). Uses AgentLookingForGroup as shown in the
@@ -827,7 +1149,7 @@ public sealed class PartyFinderManager : IDisposable
 
         args.AddMenuItem(new Dalamud.Game.Gui.ContextMenu.MenuItem
         {
-            Name = new SeStringBuilder().AddText("View Recruitment").Build(),
+            Name = new SeStringBuilder().AddText(Loc.T("View Recruitment")).Build(),
             OnClicked = OnViewRecruitmentClicked,
             IsEnabled = true,
         });
@@ -846,7 +1168,7 @@ public sealed class PartyFinderManager : IDisposable
         if (!pfListingPlayerCache.TryGetValue(contentId, out var cached) || cached.ListingId == 0)
         {
             PassportCheckerReborn.ChatGui.Print(
-                "[PassportChecker] No active Party Finder listing found for this player.");
+                $"[PassportChecker] {Loc.T("No active Party Finder listing found for this player.")}");
             return;
         }
 
@@ -861,7 +1183,7 @@ public sealed class PartyFinderManager : IDisposable
                 if (agent == null)
                 {
                     PassportCheckerReborn.ChatGui.Print(
-                        "[PassportChecker] Unable to open Party Finder.");
+                        $"[PassportChecker] {Loc.T("Unable to open Party Finder.")}");
                     pendingRecruitmentContentId = 0;
                     return;
                 }
@@ -933,8 +1255,7 @@ public sealed class PartyFinderManager : IDisposable
             if (foundIndex < 0)
             {
                 PassportCheckerReborn.ChatGui.Print(
-                    $"[PassportChecker] Listing by {cached.Name} not found on the current page. " +
-                    "It may have expired or be on a different category/page.");
+                    $"[PassportChecker] {string.Format(Loc.T("Listing by {0} not found on the current page. It may have expired or be on a different category/page."), cached.Name)}");
                 return;
             }
 
@@ -1160,7 +1481,7 @@ public sealed class PartyFinderManager : IDisposable
         resolveCts?.Dispose();
         resolveCts = null;
 
-        currentMembers.Clear();
+        ClearMembers();
 
         try
         {
@@ -1186,11 +1507,13 @@ public sealed class PartyFinderManager : IDisposable
                 var leaderWorldName = worldSheet?.GetRowOrDefault(post.HomeWorld)?.Name.ToString() ?? string.Empty;
 
                 // If the embedded name is empty, try the cache (cross-realm join edge case)
+                var leaderFromPlayerTrack = false;
                 if (string.IsNullOrEmpty(leaderName))
                 {
                     var cached = ResolvePlayerFromCache(leaderCid);
                     leaderName = cached?.Name ?? $"{UnresolvedNamePrefix}{leaderCid:X16}";
                     leaderWorldName = cached?.World ?? leaderWorldName;
+                    leaderFromPlayerTrack = cached?.Source == NameSource.PlayerTrack;
                 }
 
                 // Cache the leader so CharaCard fallback and context-menu features work
@@ -1213,7 +1536,10 @@ public sealed class PartyFinderManager : IDisposable
                     }
                 }
 
-                currentMembers.Add(new Windows.PartyMemberInfo(leaderName, leaderWorldName, leaderJobAbbreviation, leaderCid));
+                AddMember(new Windows.PartyMemberInfo(leaderName, leaderWorldName, leaderJobAbbreviation, leaderCid)
+                {
+                    FromPlayerTrack = leaderFromPlayerTrack,
+                });
             }
             else
             {
@@ -1248,26 +1574,37 @@ public sealed class PartyFinderManager : IDisposable
                 var name = resolved?.Name ?? $"{UnresolvedNamePrefix}{contentId:X16}";
                 var world = resolved?.World ?? string.Empty;
 
-                currentMembers.Add(new Windows.PartyMemberInfo(name, world, jobAbbreviation, contentId));
+                // Provenance flows straight from the resolving source — no name-matching needed.
+                AddMember(new Windows.PartyMemberInfo(name, world, jobAbbreviation, contentId)
+                {
+                    FromPlayerTrack = resolved?.Source == NameSource.PlayerTrack,
+                });
             }
 
+            var members = MembersSnapshot();
             PassportCheckerReborn.Log.Information(
-                $"[PCR:Refresh] MemberContentIds scan: {nonZeroSlots} non-zero slots, {currentMembers.Count} members added total.");
+                $"[PCR:Refresh] MemberContentIds scan: {nonZeroSlots} non-zero slots, {members.Length} members added total.");
 
-            if (currentMembers.Count > 0)
+            if (members.Length > 0)
             {
                 // If any members were not resolved from cache, try CharaCard lookup
                 var hasUnresolved = false;
-                for (var i = 0; i < currentMembers.Count; i++)
+                foreach (var m in members)
                 {
-                    if (currentMembers[i].Name.StartsWith(UnresolvedNamePrefix))
+                    if (m.Name.StartsWith(UnresolvedNamePrefix))
                     {
                         hasUnresolved = true;
                         break;
                     }
                 }
 
-                if (hasUnresolved && charaCardPacketHandlerHook is { IsEnabled: true })
+                var playerTrackUsable = plugin.Configuration.EnablePlayerTrackIntegration
+                    && plugin.PlayerTrackService?.IsUsable == true;
+                var charaCardReady = charaCardPacketHandlerHook is { IsEnabled: true };
+                var reverifyNeeded = charaCardReady && plugin.Configuration.EnableStaleNameReverification
+                    && AnyMemberNeedsReverify();
+
+                if ((hasUnresolved || reverifyNeeded) && (charaCardReady || playerTrackUsable))
                 {
                     resolveCts = new CancellationTokenSource();
                     _ = ResolveUnresolvedMembersAsync(resolveCts.Token);
@@ -1302,14 +1639,6 @@ public sealed class PartyFinderManager : IDisposable
 
     /// <summary>Manually triggers a live re-read of the blacklist string array and saves the result.</summary>
     public void ForceRefreshBlacklist() => ReadBlacklistFromAddon();
-
-    /// <summary>
-    /// Checks if a player is in the known-players set.
-    /// </summary>
-    public bool IsKnownPlayer(string name, string world)
-    {
-        return KnownPlayers.ContainsKey($"{name}@{world}");
-    }
 
     /// <summary>
     /// Checks if a player is on the local user's blacklist.
@@ -1432,7 +1761,7 @@ public sealed class PartyFinderManager : IDisposable
         showLogMessageHook?.Dispose();
         charaCardRequestGate.Dispose();
 
-        currentMembers.Clear();
+        ClearMembers();
         pfListingPlayerCache.Clear();
     }
 }

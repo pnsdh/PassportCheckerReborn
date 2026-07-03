@@ -1,8 +1,8 @@
 {
     "Author": "The Combat Reborn Team",
-    "Name": "Passport Checker Reborn",
+    "Name": "Passport Checker Reborn (Custom)",
     "InternalName": "PassportCheckerReborn",
-    "RepoUrl": "https://github.com/FFXIV-CombatReborn/PassportCheckerReborn",
+    "RepoUrl": "https://github.com/pnsdh/PassportCheckerReborn",
     "Description": "Passport Checker Reborn is an open-source alternative to the PFFinder plugin.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -26,5 +26,5 @@
     "IsTestingExclusive": false,
     "IconUrl": "https://raw.githubusercontent.com/FFXIV-CombatReborn/RebornAssets/main/IconAssets/PCR_Icon.png",
     "Punchline": "Shows a member-info overlay alongside party finder listings.",
-    "AcceptsFeedback": true
+    "AcceptsFeedback": false
 }
