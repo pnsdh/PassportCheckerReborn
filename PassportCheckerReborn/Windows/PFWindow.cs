@@ -1,12 +1,13 @@
-using Dalamud.Interface.Textures;
-using Dalamud.Interface.Windowing;
-using FFXIVClientStructs.FFXIV.Component.GUI;
-using PassportCheckerReborn.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Threading.Tasks;
+using Dalamud.Interface.Textures;
+using Dalamud.Interface.Utility.Raii;
+using Dalamud.Interface.Windowing;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+using PassportCheckerReborn.Services;
 
 namespace PassportCheckerReborn.Windows;
 
@@ -401,11 +402,14 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
         else if (isKnown)
         {
-            ImGui.TextColored(cfg.KnownPlayerBorderColor, displayName);
+            ClickableText(displayName, $"https://tomestone.gg/character-name/{member.World}/{member.Name}", cfg.KnownPlayerBorderColor);
         }
         else
         {
-            ImGui.TextUnformatted(displayName);
+            if (!isResolved)
+                ImGui.TextUnformatted(displayName);
+            else
+                ClickableText(displayName, $"https://tomestone.gg/character-name/{member.World}/{member.Name}");
         }
 
         if (member.IsPrivate)
@@ -955,6 +959,13 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
 
         ImGui.TextColored(GetParseColor(parse), $"{parse:F0}%");
+    }
+
+    internal static void ClickableText(string content, string url, Vector4? col = null)
+    {
+        using var _ = ImRaii.PushColor(ImGuiCol.Text, col);
+        if (ImGui.Selectable(content)) Dalamud.Utility.Util.OpenLink(url);
+        if (ImGui.IsItemHovered()) ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
     }
 }
 
