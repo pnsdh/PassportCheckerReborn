@@ -33,7 +33,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
-    internal const string Version = "7.5.1.0";
+    internal const string Version = "7.5.1.2";
 
     /// <summary>
     /// Whether the game is the Korean client. Dalamud's <see cref="ClientLanguage"/> enum has no

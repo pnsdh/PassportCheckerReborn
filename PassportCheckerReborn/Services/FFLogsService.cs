@@ -1323,6 +1323,13 @@ public sealed class FFLogsService : IDisposable
         var queryParts = new List<string>();
         var validIndices = new List<int>();
 
+        // Savage raids share ONE encounter ID across Normal + Savage difficulties, so filter to Savage (101)
+        // to keep a first-timer's Normal (Story-mode) pulls of that boss out. Single-difficulty content
+        // (Ultimate / Extreme / Unreal / Chaotic) has no such overlap, so it needs no filter.
+        var difficultyParam = GetDifficultyForEncounter(encounterId) == DifficultyHigh
+            ? $", difficulty: {DifficultyHigh}"
+            : string.Empty;
+
         foreach (var i in noKillIndices)
         {
             var (name, world, _) = members[i];
@@ -1334,8 +1341,12 @@ public sealed class FFLogsService : IDisposable
 
             var (slug, region) = serverInfo.Value;
             validIndices.Add(i);
+            // masterData.actors + fights.friendlyPlayers let us keep ONLY the fights this character actually
+            // took part in. recentReports.fights otherwise returns EVERY fight of the encounter in each
+            // report, including other players' pulls in large shared/community logs — which would surface a
+            // stranger's wipes as this player's progression.
             queryParts.Add(
-                $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ recentReports(limit: {ProgressionReportLimit}) {{ data {{ fights(encounterID: {encounterId}) {{ kill fightPercentage bossPercentage lastPhase }} }} }} }}");
+                $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ recentReports(limit: {ProgressionReportLimit}) {{ data {{ masterData {{ actors(type: ""Player"") {{ id name }} }} fights(encounterID: {encounterId}{difficultyParam}) {{ kill fightPercentage bossPercentage lastPhase friendlyPlayers }} }} }} }}");
         }
 
         if (queryParts.Count == 0)
@@ -1385,13 +1396,18 @@ public sealed class FFLogsService : IDisposable
                         continue;
                     }
 
-                    // Best pull across all recent reports = the wipe with the lowest fightPercentage.
+                    // Best pull across recent reports = the lowest-fightPercentage wipe THIS player was in.
                     double? bestFightPct = null;
                     double? bestBossPct = null;
                     int? bestPhase = null;
+                    var memberName = members[i].Name;
 
                     foreach (var report in reportArr.EnumerateArray())
                     {
+                        // Actor ids for this character in this report (matched by name). recentReports is
+                        // scoped to this character, so they are present; used to drop other players' fights.
+                        var myActorIds = CollectActorIds(report, memberName);
+
                         if (!report.TryGetProperty("fights", out var fightsEl) ||
                             fightsEl.ValueKind != JsonValueKind.Array)
                         {
@@ -1404,6 +1420,12 @@ public sealed class FFLogsService : IDisposable
                             if (fight.TryGetProperty("kill", out var killEl) &&
                                 killEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
                                 killEl.GetBoolean())
+                            {
+                                continue;
+                            }
+
+                            // Only count pulls this character actually participated in (see query comment).
+                            if (!FightIncludesActor(fight, myActorIds))
                             {
                                 continue;
                             }
@@ -1459,6 +1481,60 @@ public sealed class FFLogsService : IDisposable
         }
 
         PublishNoKill();
+    }
+
+    /// <summary>
+    /// Actor ids in <paramref name="report"/> whose player name equals <paramref name="name"/>. Used to keep
+    /// only the character's own fights, since a report can contain many other players' pulls (large shared or
+    /// community logs). <c>recentReports</c> is scoped to this character, so a match is expected to exist.
+    /// </summary>
+    private static HashSet<int> CollectActorIds(JsonElement report, string name)
+    {
+        var ids = new HashSet<int>();
+        if (report.TryGetProperty("masterData", out var md)
+            && md.TryGetProperty("actors", out var actors)
+            && actors.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var actor in actors.EnumerateArray())
+            {
+                if (actor.TryGetProperty("name", out var an) && an.ValueKind == JsonValueKind.String
+                    && string.Equals(an.GetString(), name, StringComparison.Ordinal)
+                    && actor.TryGetProperty("id", out var ai) && ai.ValueKind == JsonValueKind.Number)
+                {
+                    ids.Add(ai.GetInt32());
+                }
+            }
+        }
+
+        return ids;
+    }
+
+    /// <summary>
+    /// True when the fight's <c>friendlyPlayers</c> include one of <paramref name="actorIds"/>. Returns false
+    /// for an empty set (character not identifiable in this report) so an unattributable fight is never counted
+    /// as the character's progression.
+    /// </summary>
+    private static bool FightIncludesActor(JsonElement fight, HashSet<int> actorIds)
+    {
+        if (actorIds.Count == 0)
+        {
+            return false;
+        }
+
+        if (!fight.TryGetProperty("friendlyPlayers", out var fp) || fp.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var p in fp.EnumerateArray())
+        {
+            if (p.ValueKind == JsonValueKind.Number && actorIds.Contains(p.GetInt32()))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

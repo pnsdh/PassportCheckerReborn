@@ -145,12 +145,6 @@ public sealed class PartyFinderManager : IDisposable
     public string CurrentDutyName { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Monotonically increasing counter that increments each time a new
-    /// LookingForGroupDetail pane is opened. Used by the overlay to detect
-    /// when cached data should be cleared.
-    /// </summary>
-    public int DetailOpenGeneration { get; private set; }
-
     /// <summary>
     /// Whether any current members have unresolved names (still being looked up
     /// via adventure plate / CharaCard). The overlay uses this to disable buttons
@@ -962,9 +956,8 @@ public sealed class PartyFinderManager : IDisposable
     private void OnPFDetailSetup(AddonEvent type, AddonArgs args)
     {
         IsDetailOpen = true;
-        DetailOpenGeneration++;
         trackedPartyMemberCount = GetEffectivePartyCount();
-        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] Detail OPENED (gen={DetailOpenGeneration}, partyCount={trackedPartyMemberCount}).");
+        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] Detail OPENED (partyCount={trackedPartyMemberCount}).");
 
         // Pause auto-refresh while the detail pane is open (matches DailyRoutines pattern)
         StopAutoRefreshTimer();

@@ -26,30 +26,23 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 {
     private readonly PassportCheckerReborn plugin = plugin;
 
-    // Per-member FFLogs encounter cache (index → result)
-    // ConcurrentDictionary: the FFLogs batch task writes entries from a background thread (progressively, as
-    // each member resolves) while the UI thread reads them each frame.
-    private ConcurrentDictionary<int, EncounterParseResult?> fflogsEncounterCache = new();
+    // Per-member caches keyed by ContentId (player identity), NOT row index — so when the listing's roster
+    // shifts (a member joins/leaves) each player keeps their own result and only genuinely-new members are
+    // fetched; nothing is misattributed to a shifted row and the display doesn't flicker. Cleared only when
+    // the DUTY changes (the cached encounter data no longer applies).
+    // ConcurrentDictionary: the background batch tasks write entries (progressively) while the UI thread reads
+    // them each frame.
+    private ConcurrentDictionary<ulong, EncounterParseResult?> fflogsEncounterCache = new();
     private bool fflogsBatchInProgress;
 
-    // Per-member Tomestone info cache (index → character info)
-    // ConcurrentDictionary: written by the background Tomestone batch task, read on the UI thread each frame.
-    private ConcurrentDictionary<int, TomestoneCharacterInfo?> tomestoneInfoCache = new();
+    private ConcurrentDictionary<ulong, TomestoneCharacterInfo?> tomestoneInfoCache = new();
     private bool tomestoneBatchInProgress;
 
-    // Tracks the PartyFinderManager generation so we can clear caches on new detail open
-    private int lastDetailGeneration = -1;
-
-    // "loaded (or loading) successfully" — gates the FFLogs button's disabled state. Reset to false on a
-    // failed lookup so the button re-enables for a manual retry.
-    private bool fflogsFetched;
-
-    // "a fetch was kicked off for this listing" — gates the ONE-TIME auto-fetch so a failed lookup (which
-    // clears fflogsFetched) can't make auto-fetch loop and hammer the API. Only reset on a new listing.
-    private bool fflogsFetchInitiated;
-
-    // Tracks whether Tomestone data has been fetched (user clicked button) for this generation
-    private bool tomestoneFetched;
+    // The duty the caches currently hold data for. When it changes the caches are cleared (the per-player
+    // encounter results no longer apply). Tracks the NAME too so id-0 content that is mapped only by name and
+    // shares dutyId 0 across different duties still invalidates correctly.
+    private uint lastFetchDutyId;
+    private string lastFetchDutyName = string.Empty;
 
     // Cached size of this overlay window from the previous frame, used for clamping in PreDraw
     private Vector2 lastWindowSize = new(300f, 200f);
@@ -126,16 +119,19 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     {
         var cfg = plugin.Configuration;
 
-        // Clear cached data when a new LookingForGroupDetail pane is opened
-        var gen = plugin.PartyFinderManager.DetailOpenGeneration;
-        if (gen != lastDetailGeneration)
+        // Clear the caches only when the DUTY changes — the per-player results are keyed to that duty's
+        // encounter. A roster change (member joins/leaves) keeps the same duty, so cached players are kept and
+        // only new ones get fetched. Key on (id, name) so id-0 mapped-by-name content also invalidates; ignore
+        // the fully-blank between-listings state (id 0 AND no name) so we don't wipe on it.
+        var dutyId = plugin.PartyFinderManager.CurrentDutyId;
+        var dutyName = plugin.PartyFinderManager.CurrentDutyName;
+        if ((dutyId != 0 || !string.IsNullOrEmpty(dutyName))
+            && (dutyId != lastFetchDutyId || !string.Equals(dutyName, lastFetchDutyName, StringComparison.Ordinal)))
         {
-            lastDetailGeneration = gen;
+            lastFetchDutyId = dutyId;
+            lastFetchDutyName = dutyName;
             fflogsEncounterCache = new();
             tomestoneInfoCache = new();
-            fflogsFetched = false;
-            fflogsFetchInitiated = false;
-            tomestoneFetched = false;
         }
 
         if (!cfg.ShowMemberInfoOverlay || !plugin.PartyFinderManager.IsDetailOpen)
@@ -208,15 +204,17 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         var isResolving = plugin.PartyFinderManager.HasUnresolvedMembers;
 
-        // Auto-fetch FFLogs data once every name is resolved, if the option is enabled. Gated on
-        // fflogsFetchInitiated (not fflogsFetched) so a failed lookup can't retrigger it in a loop.
-        if (cfg.AutoFetchFFLogsWhenResolved && hasFFLogs && !fflogsFetchInitiated && !fflogsBatchInProgress
-            && !isResolving && members.Count > 0)
+        // Auto-fetch FFLogs once names are resolved (option). Only members with NO cached entry yet — so a
+        // failed lookup (which leaves a FetchFailed entry) isn't auto-retried in a loop, and a member who
+        // joins the listing later is picked up automatically without wiping everyone else.
+        if (cfg.AutoFetchFFLogsWhenResolved && hasFFLogs && !fflogsBatchInProgress && !isResolving)
         {
-            fflogsBatchInProgress = true;
-            fflogsFetched = true;
-            fflogsFetchInitiated = true;
-            _ = FetchAllFFLogsDataAsync(members);
+            var toFetch = FfMembersToFetch(members, includeFailed: false);
+            if (toFetch.Count > 0)
+            {
+                fflogsBatchInProgress = true;
+                _ = FetchFFLogsForAsync(toFetch);
+            }
         }
 
         if (cfg.EnableTomestoneIntegration)
@@ -233,8 +231,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             }
             else
             {
-                // Mirror the FFLogs button: fixed label, disabled once loading or loaded (no "\u2026" morph).
-                var tsDisabled = isResolving || tomestoneBatchInProgress || tomestoneFetched;
+                // Fixed label; disabled while resolving/loading, or when every member already has data.
+                var tsToFetch = TsMembersToFetch(members);
+                var tsDisabled = isResolving || tomestoneBatchInProgress || tsToFetch.Count == 0;
 
                 if (tsDisabled)
                 {
@@ -244,8 +243,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 if (ImGui.SmallButton(Loc.T("Tomestone Lookup##ts_all")) && !tsDisabled)
                 {
                     tomestoneBatchInProgress = true;
-                    tomestoneFetched = true;
-                    _ = FetchAllTomestoneInfoAsync(members);
+                    _ = FetchTomestoneForAsync(tsToFetch);
                 }
 
                 if (tsDisabled)
@@ -263,7 +261,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     {
                         ImGui.SetTooltip(Loc.T("Looking up Tomestone data for all players\u2026"));
                     }
-                    else if (tomestoneFetched)
+                    else if (tsToFetch.Count == 0)
                     {
                         ImGui.SetTooltip(Loc.T("Tomestone data already loaded for this listing"));
                     }
@@ -289,9 +287,10 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             }
             else
             {
-                // Disable once loading or already loaded (button press or auto-fetch) so it can't fetch
-                // twice; the label stays fixed instead of morphing into "...".
-                var ffDisabled = isResolving || fflogsBatchInProgress || fflogsFetched;
+                // Fixed label; disabled while resolving/loading, or when every member already has data. Members
+                // whose last lookup FAILED are included again so the button re-enables for a manual retry.
+                var ffToFetch = FfMembersToFetch(members, includeFailed: true);
+                var ffDisabled = isResolving || fflogsBatchInProgress || ffToFetch.Count == 0;
                 if (ffDisabled)
                 {
                     ImGui.BeginDisabled();
@@ -300,9 +299,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 if (ImGui.SmallButton(Loc.T("FFLogs Lookup##ff_all")) && !ffDisabled)
                 {
                     fflogsBatchInProgress = true;
-                    fflogsFetched = true;
-                    fflogsFetchInitiated = true;
-                    _ = FetchAllFFLogsDataAsync(members);
+                    _ = FetchFFLogsForAsync(ffToFetch);
                 }
 
                 if (ffDisabled)
@@ -320,7 +317,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     {
                         ImGui.SetTooltip(Loc.T("Looking up FFLogs data for all players\u2026"));
                     }
-                    else if (fflogsFetched)
+                    else if (ffToFetch.Count == 0)
                     {
                         ImGui.SetTooltip(Loc.T("FFLogs data already loaded for this listing"));
                     }
@@ -473,9 +470,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         if (hasTomestone)
         {
             ImGui.TableNextColumn();
-            if (!member.IsPrivate && tomestoneFetched)
+            if (!member.IsPrivate)
             {
-                if (tomestoneInfoCache.TryGetValue(index, out var cachedTs))
+                if (tomestoneInfoCache.TryGetValue(member.ContentId, out var cachedTs))
                 {
                     if (cachedTs != null)
                     {
@@ -545,9 +542,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         if (hasFFLogs)
         {
             ImGui.TableNextColumn();
-            if (!member.IsPrivate && fflogsFetched)
+            if (!member.IsPrivate)
             {
-                if (fflogsEncounterCache.TryGetValue(index, out var cachedFf))
+                if (fflogsEncounterCache.TryGetValue(member.ContentId, out var cachedFf))
                 {
                     DrawFFLogsCellContent(cachedFf, member);
                 }
@@ -565,106 +562,132 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         ImGui.PopID();
     }
 
-    /// <summary>
-    /// Fetches FFLogs encounter data for all members in a batch.
-    /// Uses encounter-specific queries when the duty is detected,
-    /// falls back to general zone parse otherwise.
-    /// Updates the cache progressively as data is fetched.
-    /// </summary>
-    private async Task FetchAllFFLogsDataAsync(IReadOnlyList<PartyMemberInfo> members)
+    // ── Cache helpers (all caches keyed by member ContentId) ────────────────
+
+    /// <summary>Members eligible for a lookup: a resolved real name, not private, with a usable ContentId
+    /// (the cache key).</summary>
+    private static bool IsLookupEligible(PartyMemberInfo m) =>
+        !m.IsPrivate
+        && m.ContentId != 0
+        && !string.IsNullOrWhiteSpace(m.Name)   // matches the service's own empty-name skip; avoids a member
+                                                 // that never gets a cached result being re-fetched every frame
+        && !m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix, StringComparison.Ordinal)
+        && !m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix, StringComparison.Ordinal);
+
+    /// <summary>Eligible members whose FFLogs result isn't cached yet — plus, when <paramref name="includeFailed"/>,
+    /// those whose last lookup failed (so a manual retry re-covers them). This is the set a fetch should cover.</summary>
+    private List<PartyMemberInfo> FfMembersToFetch(IReadOnlyList<PartyMemberInfo> members, bool includeFailed)
     {
+        var list = new List<PartyMemberInfo>();
+        foreach (var m in members)
+        {
+            if (!IsLookupEligible(m))
+            {
+                continue;
+            }
+
+            if (!fflogsEncounterCache.TryGetValue(m.ContentId, out var cached))
+            {
+                list.Add(m);
+            }
+            else if (includeFailed && cached?.FetchFailed == true)
+            {
+                list.Add(m);
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>Eligible members whose Tomestone info isn't cached yet.</summary>
+    private List<PartyMemberInfo> TsMembersToFetch(IReadOnlyList<PartyMemberInfo> members)
+    {
+        var list = new List<PartyMemberInfo>();
+        foreach (var m in members)
+        {
+            if (IsLookupEligible(m) && !tomestoneInfoCache.ContainsKey(m.ContentId))
+            {
+                list.Add(m);
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// Fetches FFLogs data for the given members and stores each result in the cache keyed by ContentId, so a
+    /// later roster change keeps every other player's data and only genuinely-new members are re-queried.
+    /// Uses an encounter-specific batch when the duty is mapped, else a general zone-parse fallback. Renders
+    /// progressively via the per-member callback.
+    /// </summary>
+    private async Task FetchFFLogsForAsync(List<PartyMemberInfo> toFetch)
+    {
+        // Capture the cache instance now: if the duty changes mid-fetch the UI thread swaps the field for a
+        // fresh dictionary, and this (old-duty) task must keep writing into the OLD one — which is then
+        // discarded — so it can never leak old-duty results into the new duty's cache.
+        var cache = fflogsEncounterCache;
         try
         {
+            var memberData = new List<(string Name, string World, string JobAbbreviation)>(toFetch.Count);
+            foreach (var m in toFetch)
+            {
+                memberData.Add((m.Name, m.World, m.JobAbbreviation));
+            }
+
             var encounterIds = FFLogsService.GetEncounterIdsForDuty(
                 plugin.PartyFinderManager.CurrentDutyId,
                 plugin.PartyFinderManager.CurrentDutyName);
 
             if (encounterIds.HasValue)
             {
-                // Encounter-specific batch query
-                var memberData = new List<(string Name, string World, string JobAbbreviation)>();
-                for (var i = 0; i < members.Count; i++)
-                {
-                    var m = members[i];
-                    var isUnresolvedSlot = m.IsPrivate
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
-                    memberData.Add(isUnresolvedSlot
-                        ? (string.Empty, string.Empty, m.JobAbbreviation)
-                        : (m.Name, m.World, m.JobAbbreviation));
-                }
-
-                // Aggregates P1/P2 and, for Ultimates, kills/parses across every expansion's listing.
-                // Progressive: the callback renders fast kill/parse data the moment it arrives, so the slow
-                // per-player progression query doesn't hold up the whole table.
                 var results = await plugin.FFLogsService.GetDutyEncounterDataForAllAsync(
                     memberData,
                     plugin.PartyFinderManager.CurrentDutyId,
                     plugin.PartyFinderManager.CurrentDutyName,
-                    onMemberUpdated: (index, result) => fflogsEncounterCache[index] = result);
+                    onMemberUpdated: (index, result) =>
+                    {
+                        if (index >= 0 && index < toFetch.Count)
+                        {
+                            cache[toFetch[index].ContentId] = result;
+                        }
+                    });
 
-                // Ensure the final state is consistent (also covers any members the callback didn't touch).
                 foreach (var (index, result) in results)
                 {
-                    fflogsEncounterCache[index] = result;
-                }
-
-                // The zone-average fallback for no-log players is already folded into the batched
-                // results by the service. Just fill any indices it didn't cover (private/unresolved slots).
-                for (var i = 0; i < members.Count; i++)
-                {
-                    if (!fflogsEncounterCache.ContainsKey(i))
+                    if (index >= 0 && index < toFetch.Count)
                     {
-                        fflogsEncounterCache[i] = new EncounterParseResult(false, true, 0, null, null);
+                        cache[toFetch[index].ContentId] = result;
                     }
                 }
             }
             else
             {
-                // Fallback: batched general zone parse in one request. Private/unresolved slots skip lookup.
-                var memberData = new List<(string Name, string World, string JobAbbreviation)>();
-                for (var i = 0; i < members.Count; i++)
-                {
-                    var m = members[i];
-                    var isUnresolvedSlot = m.IsPrivate
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
-                    memberData.Add(isUnresolvedSlot
-                        ? (string.Empty, string.Empty, m.JobAbbreviation)
-                        : (m.Name, m.World, m.JobAbbreviation));
-                }
-
+                // Fallback: batched general zone parse in one request.
                 var averages = await plugin.FFLogsService.GetZoneAveragesForAllAsync(memberData);
-                for (var i = 0; i < members.Count; i++)
+                for (var i = 0; i < toFetch.Count; i++)
                 {
-                    var m = members[i];
-                    var isUnresolvedSlot = m.IsPrivate
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                        || m.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix);
-                    fflogsEncounterCache[i] = isUnresolvedSlot
-                        ? null
-                        : averages.TryGetValue(i, out var r) ? r : new EncounterParseResult(false, false, 0, null, null);
+                    cache[toFetch[i].ContentId] =
+                        averages.TryGetValue(i, out var r) ? r : new EncounterParseResult(false, false, 0, null, null);
                 }
             }
         }
         catch (Exception ex)
         {
             PassportCheckerReborn.Log.Warning(ex, "[OverlayWindow] FFLogs batch lookup failed.");
-            fflogsFetched = false; // hard failure — let the button retry
+
+            // Mark any member left without a result as a retryable failure, so auto-fetch doesn't loop on them
+            // (they now have an entry) while the button — which includes failed members — can still retry.
+            foreach (var m in toFetch)
+            {
+                if (!cache.ContainsKey(m.ContentId))
+                {
+                    cache[m.ContentId] = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
+                }
+            }
         }
         finally
         {
             fflogsBatchInProgress = false;
-
-            // If any member's lookup failed, re-enable the button so the user can retry.
-            foreach (var r in fflogsEncounterCache.Values)
-            {
-                if (r?.FetchFailed == true)
-                {
-                    fflogsFetched = false;
-                    break;
-                }
-            }
         }
     }
 
@@ -691,38 +714,31 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     }
 
     /// <summary>
-    /// Fetches Tomestone character info for all members in a batch.
+    /// Fetches Tomestone info for the given members, storing each result in the cache keyed by ContentId.
     /// Passes the current duty name so the API can return encounter-specific data.
-    /// Updates the cache progressively as each player's data is fetched.
     /// </summary>
-    private async Task FetchAllTomestoneInfoAsync(IReadOnlyList<PartyMemberInfo> members)
+    private async Task FetchTomestoneForAsync(List<PartyMemberInfo> toFetch)
     {
+        // Capture the cache instance (see FetchFFLogsForAsync) so a mid-fetch duty change can't leak results
+        // into the new duty's cache.
+        var cache = tomestoneInfoCache;
         try
         {
             var dutyName = plugin.PartyFinderManager.CurrentDutyName;
 
-            for (var i = 0; i < members.Count; i++)
+            foreach (var member in toFetch)
             {
-                var member = members[i];
-                if (member.IsPrivate
-                    || member.Name.StartsWith(PartyFinderManager.UnresolvedNamePrefix)
-                    || member.Name.StartsWith(PartyFinderManager.UnresolvedPlayerPrefix))
-                {
-                    tomestoneInfoCache[i] = null;
-                    continue;
-                }
-
                 try
                 {
                     var info = await plugin.TomestoneService.GetCharacterInfoAsync(
                         member.Name, member.World, dutyName);
-                    tomestoneInfoCache[i] = info;
+                    cache[member.ContentId] = info;
                 }
                 catch (Exception ex)
                 {
                     PassportCheckerReborn.Log.Warning(ex,
                         $"[OverlayWindow] Tomestone lookup failed for {member.Name}@{member.World}");
-                    tomestoneInfoCache[i] = null;
+                    cache[member.ContentId] = null;
                 }
             }
         }
@@ -850,7 +866,10 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
             if (cachedFf.Phase2LowestBossHpPct.HasValue)
             {
-                ImGui.TextColored(ProgYellow, $"P2 {cachedFf.Phase2LowestBossHpPct.Value:F1}%");
+                // Tag as a wipe (like the single-encounter progression) so the P2 wipe % isn't mistaken for
+                // the P2 clear parse shown in the cleared branch above.
+                ImGui.TextColored(ProgYellow,
+                    "P2 " + string.Format(Loc.T("{0}% wipe"), cachedFf.Phase2LowestBossHpPct.Value.ToString("F1")));
             }
             else if (p2Parse.HasValue)
             {
@@ -901,8 +920,8 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     }
 
     /// <summary>
-    /// Draws a no-kill progression pull in amber. Phased fights read "P3 8.8%"; phase-less fights read
-    /// "8.8% 전멸" so a wipe % isn't mistaken for a parse percentile.
+    /// Draws a no-kill progression pull in amber, always tagged as a wipe so it can't be mistaken for a parse
+    /// percentile. Phased fights read "P3 8.8% 전멸"; phase-less fights read "8.8% 전멸".
     /// </summary>
     internal static void DrawProgression(EncounterParseResult cachedFf)
     {
@@ -911,10 +930,8 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             return;
         }
 
-        var pct = cachedFf.LowestBossHpPct.Value.ToString("F1");
-        var text = cachedFf.ProgLastPhase is int ph && ph >= 2
-            ? $"P{ph} {pct}%"
-            : string.Format(Loc.T("{0}% wipe"), pct);
+        var wipe = string.Format(Loc.T("{0}% wipe"), cachedFf.LowestBossHpPct.Value.ToString("F1"));
+        var text = cachedFf.ProgLastPhase is int ph && ph >= 2 ? $"P{ph} {wipe}" : wipe;
         ImGui.TextColored(ProgYellow, text);
     }
 
