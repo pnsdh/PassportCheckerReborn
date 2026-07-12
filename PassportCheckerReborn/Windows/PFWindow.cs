@@ -816,7 +816,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         if (hasMultiPhaseData)
         {
-            DrawMultiPhaseCell(cachedFf, member);
+            DrawMultiPhaseCell(cachedFf);
         }
         else if (cachedFf.TotalKills > 0)
         {
@@ -832,56 +832,46 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
     }
 
-    /// <summary>Two-phase (M4-style) fight: kills + per-phase parses, or per-phase progress when not cleared.</summary>
-    private static void DrawMultiPhaseCell(EncounterParseResult cachedFf, PartyMemberInfo member)
+    /// <summary>Two-phase (M4-style) fight: each phase's own kills + parse/progress, compact on one line.</summary>
+    private static void DrawMultiPhaseCell(EncounterParseResult cachedFf)
     {
-        var p1Parse = cachedFf.Phase1BestParse;
-        var p2Parse = cachedFf.Phase2BestParse;
+        // Both phases on ONE line, compact: "P1 30킬 95.0%   P2 14킬 90.0%". Each phase keeps its own kill
+        // count and parse/progression (P1 and P2 usually differ), but the per-job icon + best-on-a-different-
+        // job are dropped here — showing them for both phases would make the line too wide.
+        DrawPhaseCompact("P1", cachedFf.Phase1Result);
+        ImGui.SameLine(0, 14);
+        DrawPhaseCompact("P2", cachedFf.Phase2Result);
+    }
 
-        if (cachedFf.TotalKills > 0 && p1Parse.HasValue && p2Parse.HasValue)
+    /// <summary>One phase of a two-phase fight, compact: "P1 &lt;kills&gt;킬 &lt;parse&gt;%", "P1 &lt;pct&gt;% 전멸", or "P1 기록 없음".</summary>
+    private static void DrawPhaseCompact(string label, EncounterParseResult? phase)
+    {
+        ImGui.TextUnformatted(label);
+        ImGui.SameLine();
+
+        if (phase is null || !phase.HasData)
         {
-            // A clear is always green; the per-phase parses stay grade-coloured.
-            ImGui.TextColored(ClearGreen, string.Format(Loc.T("Cleared {0}X"), cachedFf.TotalKills));
-            ImGui.SameLine();
-            ImGui.TextUnformatted("P1");
-            ImGui.SameLine();
-            ImGui.TextColored(GetParseColor(p1Parse.Value), $"{p1Parse.Value:F1}%");
-            ImGui.SameLine();
-            ImGui.TextUnformatted("P2");
-            ImGui.SameLine();
-            ImGui.TextColored(GetParseColor(p2Parse.Value), $"{p2Parse.Value:F1}%");
+            ImGui.TextColored(NoDataColor, Loc.T("No logs"));
+            return;
+        }
+
+        if (phase.TotalKills > 0)
+        {
+            ImGui.TextColored(ClearGreen, string.Format(Loc.T("Cleared {0}X"), phase.TotalKills));
+            if (phase.BestParse.HasValue)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(GetParseColor(phase.BestParse.Value), $"{phase.BestParse.Value:F1}%");
+            }
+        }
+        else if (phase.LowestBossHpPct.HasValue)
+        {
+            ImGui.TextColored(ProgYellow, string.Format(Loc.T("{0}% wipe"), phase.LowestBossHpPct.Value.ToString("F1")));
         }
         else
         {
-            if (p1Parse.HasValue)
-            {
-                ImGui.TextColored(GetParseColor(p1Parse.Value), $"P1 {p1Parse.Value:F1}%");
-            }
-            else
-            {
-                ImGui.TextColored(NoDataColor, Loc.T("P1 No logs"));
-            }
-
-            ImGui.SameLine();
-
-            if (cachedFf.Phase2LowestBossHpPct.HasValue)
-            {
-                // Tag as a wipe (like the single-encounter progression) so the P2 wipe % isn't mistaken for
-                // the P2 clear parse shown in the cleared branch above.
-                ImGui.TextColored(ProgYellow,
-                    "P2 " + string.Format(Loc.T("{0}% wipe"), cachedFf.Phase2LowestBossHpPct.Value.ToString("F1")));
-            }
-            else if (p2Parse.HasValue)
-            {
-                ImGui.TextColored(GetParseColor(p2Parse.Value), $"P2 {p2Parse.Value:F1}%");
-            }
-            else
-            {
-                ImGui.TextColored(NoDataColor, Loc.T("P2 No logs"));
-            }
+            ImGui.TextColored(NoDataColor, Loc.T("No logs"));
         }
-
-        DrawBestParseOnDifferentJob(cachedFf, member);
     }
 
     /// <summary>Single-encounter clear: green "Cleared NX" + current-job parse (icon), "-%", or nothing for a non-combat job.</summary>

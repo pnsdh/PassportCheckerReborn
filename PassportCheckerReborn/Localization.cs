@@ -217,8 +217,6 @@ public static class Loc
         // FFLogs result formats ({0}=kills, {1}/{2}=parse%) — templates so word order localizes.
         ["Cleared {0}X"] = "{0}킬",
         ["{0}% wipe"] = "{0}% 전멸",
-        ["P1 No logs"] = "P1 기록 없음",
-        ["P2 No logs"] = "P2 기록 없음",
         ["Average overall parse {0}%"] = "최근 영식 평균 {0}%",
         ["Hidden Profile"] = "비공개 프로필",
         ["N/A"] = "해당 없음",

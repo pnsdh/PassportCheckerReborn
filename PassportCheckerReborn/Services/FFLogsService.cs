@@ -744,6 +744,9 @@ public sealed class FFLogsService : IDisposable
                 BestParseSpec = bestPhase?.BestParseSpec,
                 BestParseJobAbbreviation = bestPhase?.BestParseJobAbbreviation,
                 BestParseJobIconId = bestPhase?.BestParseJobIconId,
+                // Full per-phase results so the overlay can render P1 and P2 each as its own single-phase cell.
+                Phase1Result = phase1,
+                Phase2Result = phase2,
             };
         }
 
@@ -1851,6 +1854,11 @@ public record EncounterParseResult(
     public double? Phase2LowestBossHpPct { get; init; }
     public int? Phase1TotalKills { get; init; }
     public int? Phase2TotalKills { get; init; }
+
+    /// <summary>For a two-phase fight, the FULL single-encounter result of each phase (P1/P2), so the overlay
+    /// can render each phase with its own kills and own parse/progression. Null on single-phase fights.</summary>
+    public EncounterParseResult? Phase1Result { get; init; }
+    public EncounterParseResult? Phase2Result { get; init; }
 
     /// <summary>
     /// True when the lookup request itself failed (network error, rate limit, bad response) rather than the
