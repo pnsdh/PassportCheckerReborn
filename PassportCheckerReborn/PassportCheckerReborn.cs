@@ -33,7 +33,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
-    internal const string Version = "7.5.1.3";
+    internal const string Version = "7.5.1.4";
 
     /// <summary>
     /// Whether the game is the Korean client. Dalamud's <see cref="ClientLanguage"/> enum has no
@@ -94,15 +94,15 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
 
             CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open Passport Check Reborn menu."
+                HelpMessage = Loc.T("Open the settings window.")
             });
             CommandManager.AddHandler(ALTCOMMAND, new CommandInfo(OnCommand)
             {
-                HelpMessage = "Open Passport Check Reborn menu."
+                HelpMessage = Loc.T("Open the settings window.")
             });
             CommandManager.AddHandler(PartyListCommandName, new CommandInfo(OnPartyListCommand)
             {
-                HelpMessage = "Toggle the Party List Overlay on or off."
+                HelpMessage = Loc.T("Toggle the Party List Overlay on or off.")
             });
 
             // Register framework update for party list monitoring
@@ -111,6 +111,10 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             PluginInterface.UiBuilder.Draw += ManageWindowStates;
             PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+
+            // The main window IS the settings window, so wire the installer's config (gear) button to it too —
+            // without this Dalamud reports "plugin does not register a config UI callback".
+            PluginInterface.UiBuilder.OpenConfigUi += ToggleMainUi;
         });
 
         Log.Information($"[PassportCheckerReborn] Plugin loaded.");
@@ -127,6 +131,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             PluginInterface.UiBuilder.Draw -= ManageWindowStates;
             PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
+            PluginInterface.UiBuilder.OpenConfigUi -= ToggleMainUi;
 
             WindowSystem.RemoveAllWindows();
 

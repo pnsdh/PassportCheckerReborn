@@ -153,6 +153,10 @@ public static class Loc
         ["Names resolved via PlayerTrack are marked with a [PT] tag in the overlay. Hover a member's name (or the tag) to see the name's source, how old the cached data is, and any previous names."]
             = "PlayerTrack으로 조회한 이름은 오버레이에 [PT] 태그로 표시됩니다. 멤버의 이름(또는 태그)에 마우스를 올리면 이름 출처, 캐시 데이터의 오래됨 정도, 이전 이름을 볼 수 있습니다.",
 
+        // ── Command help (shown in the Dalamud plugin installer / help list) ──
+        ["Open the settings window."] = "설정 창을 엽니다.",
+        ["Toggle the Party List Overlay on or off."] = "파티 목록 오버레이를 켜거나 끕니다.",
+
         // ── About tab ────────────────────────────────────────────────────────
         ["Passport Checker Reborn"] = "Passport Checker Reborn",
         ["An open-source Party Finder enhancement plugin for Final Fantasy XIV."]

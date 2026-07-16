@@ -3,7 +3,7 @@
     "Name": "Passport Checker Reborn (Custom)",
     "InternalName": "PassportCheckerReborn",
     "RepoUrl": "https://github.com/pnsdh/PassportCheckerReborn",
-    "Description": "Passport Checker Reborn is an open-source alternative to the PFFinder plugin.",
+    "Description": "파티 찾기 목록 옆에 멤버 정보 오버레이를 표시하는 플러그인입니다. 한국 서버에 맞게 수정한 버전으로, 한국 월드/FFLogs 매핑, 한국어 UI, PlayerTrack 기반 비공개 플레이어 이름 복원을 지원합니다.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "TestingDalamudApiLevel": 15,
@@ -25,6 +25,6 @@
     "LoadPriority": 0,
     "IsTestingExclusive": false,
     "IconUrl": "https://raw.githubusercontent.com/FFXIV-CombatReborn/RebornAssets/main/IconAssets/PCR_Icon.png",
-    "Punchline": "Shows a member-info overlay alongside party finder listings.",
+    "Punchline": "파티 찾기 멤버의 로그·진행도를 한눈에 (한국 서버용)",
     "AcceptsFeedback": false
 }
