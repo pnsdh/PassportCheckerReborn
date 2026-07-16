@@ -986,7 +986,29 @@ public sealed class PartyFinderManager : IDisposable
 
     private void OnPFDetailFinalize(AddonEvent type, AddonArgs args)
     {
-        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] Detail CLOSED (partyCount={GetEffectivePartyCount()}, tracked={trackedPartyMemberCount}).");
+        // Opening a PF listing while a detail pane is already open (e.g. clicking a PF link in chat) makes the
+        // game set up the NEW pane and only THEN finalize the old one — so this Finalize can be stale and
+        // tearing down here would wipe the just-populated state and close the overlay. Defer one frame and
+        // only tear down if no detail pane is actually on screen by then.
+        PassportCheckerReborn.Framework.Update -= DeferredDetailTeardown;
+        PassportCheckerReborn.Framework.Update += DeferredDetailTeardown;
+    }
+
+    private void DeferredDetailTeardown(IFramework framework)
+    {
+        PassportCheckerReborn.Framework.Update -= DeferredDetailTeardown;
+
+        // A detail pane is still on screen → that Finalize belonged to the listing the game just replaced.
+        // Keep the current (newly set up) state.
+        if (IsDetailAddonVisible())
+        {
+            PassportCheckerReborn.Log.Debug(
+                "[PartyFinderManager] Stale detail finalize ignored — a detail pane is still on screen.");
+            return;
+        }
+
+        PassportCheckerReborn.Log.Debug("[PartyFinderManager] Detail closed — tearing down.");
+
         // Cancel any in-progress CharaCard resolution
         resolveCts?.Cancel();
         resolveCts?.Dispose();
@@ -1007,6 +1029,26 @@ public sealed class PartyFinderManager : IDisposable
         if (IsListOpen)
         {
             StartAutoRefreshTimer();
+        }
+    }
+
+    /// <summary>True when a LookingForGroupDetail pane exists and is visible on screen.</summary>
+    private static unsafe bool IsDetailAddonVisible()
+    {
+        try
+        {
+            var ptr = PassportCheckerReborn.GameGui.GetAddonByName("LookingForGroupDetail", 1);
+            if (ptr.IsNull)
+            {
+                return false;
+            }
+
+            var addon = (AtkUnitBase*)ptr.Address;
+            return addon != null && addon->IsVisible;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -1738,6 +1780,9 @@ public sealed class PartyFinderManager : IDisposable
 
         StopAutoRefreshTimer();
         UnregisterContextMenu();
+
+        // Drop the deferred teardown handler; leaving it subscribed would let it fire on a disposed instance.
+        PassportCheckerReborn.Framework.Update -= DeferredDetailTeardown;
 
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFDetailSetup);
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFDetailRefresh);
