@@ -21,12 +21,12 @@
 	<NoWarn>1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="ECommons" Version="3.2.1.6" />
+    <PackageReference Include="ECommons" Version="3.2.1.15" />
   </ItemGroup>
 
   <ItemGroup>
 	<PackageReference Update="DalamudPackager" Version="15.0.0" />
-	<PackageReference Update="DotNet.ReproducibleBuilds" Version="2.0.2" />
+	<PackageReference Update="DotNet.ReproducibleBuilds" Version="2.0.5" />
   </ItemGroup>
 
   <ItemGroup>

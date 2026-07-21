@@ -725,7 +725,10 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     /// if one is chosen, otherwise the PF detail's current duty name.
     /// </summary>
     private string? GetEffectiveDutyName()
-        => selectedDutyName ?? plugin.PartyFinderManager.CurrentDutyName;
+        => selectedDutyName ??
+           (string.IsNullOrWhiteSpace(plugin.PartyFinderManager.CurrentDutyNameEnglish)
+               ? plugin.PartyFinderManager.CurrentDutyName
+               : plugin.PartyFinderManager.CurrentDutyNameEnglish);
 
     /// <summary>
     /// Returns the effective duty identifier for FFLogs.
