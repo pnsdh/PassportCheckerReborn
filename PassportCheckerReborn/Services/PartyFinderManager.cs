@@ -62,6 +62,13 @@ public sealed class PartyFinderManager : IDisposable
     public string CurrentDutyName { get; private set; } = string.Empty;
 
     /// <summary>
+    /// The English duty name for the current PF listing (empty if unknown).
+    /// Used for API lookups (FFLogs / Tomestone) since their name maps are
+    /// keyed in English regardless of the client's configured game language.
+    /// </summary>
+    public string CurrentDutyNameEnglish { get; private set; } = string.Empty;
+
+    /// <summary>
     /// Monotonically increasing counter that increments each time a new
     /// LookingForGroupDetail pane is opened. Used by the overlay to detect
     /// when cached data should be cleared.
@@ -1008,6 +1015,7 @@ public sealed class PartyFinderManager : IDisposable
     {
         CurrentDutyId = 0;
         IsHighEndDuty = false;
+        CurrentDutyNameEnglish = string.Empty;
 
         try
         {
@@ -1025,6 +1033,13 @@ public sealed class PartyFinderManager : IDisposable
                     //PassportCheckerReborn.Log.Info($"[PartyFinderManager] PF Duty Detected \"{cfcName}\".");
                     CurrentDutyName = cfcName;
                 }
+
+                // Also resolve the English name for API lookups (FFLogs / Tomestone),
+                // since the sheet lookup above uses the client's configured game
+                // language and non-English clients would otherwise fail to match
+                // the English-keyed name maps.
+                var englishName = GetEnglishDutyNameFromId(CurrentDutyId);
+                CurrentDutyNameEnglish = englishName ?? CurrentDutyName;
 
                 // Also check the DutyCategory flag for HighEndDuty as a belt-and-braces check
                 if (!IsHighEndDuty && post.Category.HasFlag(AgentLookingForGroup.DutyCategory.HighEndDuty))
@@ -1137,6 +1152,39 @@ public sealed class PartyFinderManager : IDisposable
         catch (Exception ex)
         {
             PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to get duty name for id {0}.", dutyId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns the English duty name for the given <paramref name="dutyId"/> by
+    /// looking up the matching <see cref="ContentFinderCondition"/> row in the
+    /// English sheet, regardless of the client's configured game language.
+    /// This ensures API lookups (FFLogs / Tomestone), whose name maps are
+    /// keyed in English, resolve correctly for non-English clients.
+    /// </summary>
+    public static string? GetEnglishDutyNameFromId(uint dutyId)
+    {
+        try
+        {
+            var sheet = PassportCheckerReborn.DataManager.GetExcelSheet<ContentFinderCondition>(Dalamud.Game.ClientLanguage.English);
+            if (sheet == null)
+            {
+                return null;
+            }
+
+            var row = sheet.GetRowOrDefault(dutyId);
+            if (row == null)
+            {
+                return null;
+            }
+
+            var name = row.Value.Name.ToString();
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to get English duty name for id {0}.", dutyId);
             return null;
         }
     }

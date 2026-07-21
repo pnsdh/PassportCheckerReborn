@@ -793,7 +793,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     {
         try
         {
-            var dutyName = plugin.PartyFinderManager.CurrentDutyName;
+            var dutyName = string.IsNullOrWhiteSpace(plugin.PartyFinderManager.CurrentDutyNameEnglish)
+                ? plugin.PartyFinderManager.CurrentDutyName
+                : plugin.PartyFinderManager.CurrentDutyNameEnglish;
 
             for (var i = 0; i < members.Count; i++)
             {
