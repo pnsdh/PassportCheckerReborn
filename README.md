@@ -78,6 +78,10 @@ dotnet restore
 dotnet build
 ```
 
+## 문의
+
+https://discord.gg/AjVHyDNjUd
+
 ## 라이선스
 
 이 프로젝트는 [GNU Affero General Public License v3.0](LICENSE.md)을 따릅니다. 원본 프로젝트: [FFXIV-CombatReborn/PassportCheckerReborn](https://github.com/FFXIV-CombatReborn/PassportCheckerReborn).
