@@ -516,9 +516,19 @@ public sealed class PartyFinderManager : IDisposable
             try
             {
                 var nameSpan = packet->Name;
-                var name = nameSpan.Length > 4
-                    ? System.Text.Encoding.UTF8.GetString(nameSpan[4..]).TrimEnd('\0')
-                    : string.Empty;
+                var rawName = System.Text.Encoding.UTF8.GetString(nameSpan).TrimEnd('\0');
+
+                // The name field is sometimes preceded by non-printable/symbol bytes (e.g. icon
+                // glyphs) before the actual player name begins, and the leading count isn't fixed —
+                // so skip any leading non-letter, non-space characters rather than assuming a
+                // hardcoded byte offset (which left stray symbols like "==" in front of the name).
+                var nameStart = 0;
+                while (nameStart < rawName.Length && !char.IsLetter(rawName[nameStart]) && rawName[nameStart] != ' ')
+                {
+                    nameStart++;
+                }
+
+                var name = rawName[nameStart..].Trim();
 
                 OnCharaCardReceived?.Invoke(new CharaCardResult(packet->ContentId, name, packet->WorldId, false));
             }
