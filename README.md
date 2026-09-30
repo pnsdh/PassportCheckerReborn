@@ -46,14 +46,16 @@ https://raw.githubusercontent.com/pnsdh/DalamudPlugins/main/pluginmaster.json
 
 `/pfchecker`(또는 `/pcr`) 또는 Dalamud 플러그인 설치 창에서 설정을 엽니다.
 
-### 일반 (General) 탭
-파티 찾기 상세/목록 관련 기능을 설정합니다(직업 아이콘, 파티 변동 시 창 유지, 자동 새로고침).
+설정 창은 왼쪽 메뉴에서 페이지를 골라 이동합니다.
 
-### 오버레이 (Overlay) 탭
-멤버 정보 오버레이, 고난도 콘텐츠 필터, 오버레이 방향, FFLogs 연동을 켜고 끕니다. 파티 목록 오버레이의 위치·자동 숨김, 이름 재확인 설정도 여기에 있습니다.
+### 일반
+파티 찾기 상세/목록 관련 기능을 설정합니다(직업 아이콘, 파티 변동 시 창 유지, 자동 새로 고침, 우클릭 모집 정보 보기, 차단 목록).
 
-### FFLogs 연동 탭
-FFLogs API의 Client ID와 Client Secret을 입력하고 **Save & Test Credentials**로 인증을 확인합니다.
+### 오버레이
+멤버 정보 오버레이(고난도 임무 필터, 표시 방향, 이름 표시)와 파티 목록 오버레이(위치, 자동 숨김)를 설정합니다. 이름 재확인(이름 최신화) 설정도 여기에 있습니다.
+
+### FFLogs
+FFLogs 연동을 켜고 끄며, FFLogs API의 클라이언트 ID와 클라이언트 시크릿을 입력한 뒤 **저장 및 테스트**로 인증을 확인합니다. 이름이 모두 확인되면 자동 조회하는 옵션과 API 사용량도 여기에 있습니다.
 
 <details>
 <summary>FFLogs API 자격 증명 발급 방법</summary>
@@ -66,8 +68,11 @@ FFLogs API의 Client ID와 Client Secret을 입력하고 **Save & Test Credentia
 6. 발급된 Client ID와 Client Secret을 플러그인 설정에 입력합니다.
 </details>
 
-### PlayerTrack 탭
+### PlayerTrack
 [PlayerTrack](https://github.com/Infiziert90/PlayerTrack) DB를 읽어 모험가 카드를 숨긴 플레이어의 이름을 복원하도록 설정합니다. 실시간 모험가 카드와 PlayerTrack 중 무엇을 먼저 조회할지 선택할 수 있고, PlayerTrack의 설치/실행 상태도 표시됩니다.
+
+### 화면
+UI 언어(English/한국어), 플러그인 창의 글자 크기와 강조 색상을 설정합니다.
 
 ## 소스에서 빌드
 

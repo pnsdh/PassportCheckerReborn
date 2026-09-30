@@ -1,5 +1,6 @@
 using Dalamud.Configuration;
 using System;
+using System.Numerics;
 
 namespace PassportCheckerReborn;
 
@@ -120,6 +121,13 @@ public class Configuration : IPluginConfiguration
     /// <summary>When enabled, the PF member overlay looks up FFLogs data automatically once every
     /// member's name has been resolved, without needing to click the FFLogs button.</summary>
     public bool AutoFetchFFLogsWhenResolved { get; set; } = false;
+
+    // ── Appearance ───────────────────────────────────────────────────────────
+    /// <summary>Seed colour the Material theme generates every window's palette from.</summary>
+    public Vector4 UiAccentColor { get; set; } = UI.M3.DefaultSeed;
+
+    /// <summary>Text size of the plugin's windows, as a multiple of the Dalamud default font size.</summary>
+    public float UiTextScale { get; set; } = 1.1f;
 
     public void Save()
     {

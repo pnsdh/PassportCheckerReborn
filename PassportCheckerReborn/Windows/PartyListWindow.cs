@@ -1,9 +1,10 @@
-using Dalamud.Interface.Textures;
+using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 using PassportCheckerReborn.Services;
+using PassportCheckerReborn.UI;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -48,13 +49,26 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
     // Tracks when party composition changes to re-fetch data
     private string lastPartyCompositionKey = string.Empty;
 
+    // Width of the widest content last frame, which the header's hide button aligns to.
+    private float lastContentWidth;
+
+    private M3Style.Scope? theme;
+
     public void Dispose()
     {
         GC.SuppressFinalize(this);
     }
 
+    public override void PostDraw()
+    {
+        theme?.Dispose();
+        theme = null;
+    }
+
     public override unsafe void PreDraw()
     {
+        theme = M3Style.Push(compact: true);
+
         var position = plugin.Configuration.PartyListOverlayPosition;
 
         // For Unbound mode, make the window freely movable.
@@ -175,6 +189,9 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
 
     public override void Draw()
     {
+        // Body text follows the text size setting.
+        using var bodyFont = ImRaii.PushFont(M3.Body);
+
         var cfg = plugin.Configuration;
 
         if (!cfg.ShowPartyListOverlay ||
@@ -194,7 +211,8 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 IsOpen = false;
                 return;
             }
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Waiting for party data\u2026"));
+
+            OverlayWidgets.EmptyState(FontAwesomeIcon.HourglassHalf, Loc.T("Waiting for party data…"));
             return;
         }
 
@@ -218,49 +236,34 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
             AutoFetchData(partyMembers, cfg);
         }
 
-        ImGui.TextColored(new Vector4(0.4f, 0.8f, 1.0f, 1.0f), Loc.T("Party Member Info"));
-        ImGui.SameLine();
-        if (ImGui.SmallButton(Loc.T("Hide")))
+        var contentStartX = ImGui.GetCursorScreenPos().X;
+        if (!DrawHeader(cfg, contentStartX, out var contentRight))
         {
-            cfg.ShowPartyListOverlay = false;
-            cfg.Save();
-            IsOpen = false;
             return;
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(Loc.T("Hide this party-list overlay. Re-enable it in Settings → Overlay → Party List Overlay."));
-        }
-
-        ImGui.Separator();
-        ImGui.Spacing();
+        ImGui.Dummy(new Vector2(0f, M3.Space1));
 
         // Draw party members in a table for proper grid layout
-        DrawPartyMemberTable(cachedPartyMembers, cfg);
+        contentRight = MathF.Max(contentRight, DrawPartyMemberTable(cachedPartyMembers, cfg));
 
         if (fflogsBatchInProgress || tomestoneBatchInProgress)
         {
-            ImGui.Spacing();
+            ImGui.Dummy(new Vector2(0f, M3.Space1));
             var loadingText = fflogsBatchInProgress && tomestoneBatchInProgress
-                ? Loc.T("Loading FFLogs & Tomestone data\u2026")
+                ? Loc.T("Loading FFLogs & Tomestone data…")
                 : fflogsBatchInProgress
-                    ? Loc.T("Loading FFLogs data\u2026")
-                    : Loc.T("Loading Tomestone data\u2026");
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), loadingText);
+                    ? Loc.T("Loading FFLogs data…")
+                    : Loc.T("Loading Tomestone data…");
+            OverlayWidgets.StatusLine(FontAwesomeIcon.HourglassHalf, loadingText);
+            contentRight = MathF.Max(contentRight, ImGui.GetItemRectMax().X);
         }
 
         // ── Duty selection dropdown ─────────────────────────────────────────
         if (dutyNames.Length > 0)
         {
-            ImGui.Spacing();
-            ImGui.Separator();
-            ImGui.Spacing();
-
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), Loc.T("Duty:"));
-            ImGui.SameLine();
-            ImGui.SetNextItemWidth(250f);
-            if (ImGui.Combo("##party_duty_select", ref selectedDutyIndex, dutyNames, dutyNames.Length))
+            ImGui.Dummy(new Vector2(0f, M3.Space1));
+            if (DrawDutySelector(out var selectorRight))
             {
                 // dutyKeys holds the internal English name for the selected display label.
                 selectedDutyName = selectedDutyIndex > 0 && selectedDutyIndex < dutyKeys.Length
@@ -271,199 +274,180 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
                 tomestoneCache = [];
                 AutoFetchData(cachedPartyMembers, cfg);
             }
+
+            contentRight = MathF.Max(contentRight, selectorRight);
         }
+
+        // Floored so fractional global scales (e.g. 117%) can never nudge the button past the content
+        // and grow the window by a sub-pixel each frame.
+        lastContentWidth = MathF.Floor(contentRight - contentStartX);
 
         // Cache the window size for Above positioning on the next frame.
         lastFrameSize = ImGui.GetWindowSize();
     }
 
-    private void DrawPartyMemberTable(List<PartyMemberInfo> members, Configuration cfg)
+    /// <summary>
+    /// The title row, with the hide button at its trailing edge. Returns false when the user hid the
+    /// overlay. <paramref name="contentRight"/> receives the title's right edge, not the button's.
+    /// </summary>
+    private bool DrawHeader(Configuration cfg, float contentStartX, out float contentRight)
     {
+        // Show the selected duty by its display label (localised), not its internal English key.
+        var dutyName = selectedDutyName is not null && selectedDutyIndex > 0 && selectedDutyIndex < dutyNames.Length
+            ? dutyNames[selectedDutyIndex]
+            : GetEffectiveDutyName();
+        OverlayWidgets.Header(FontAwesomeIcon.UserFriends, Loc.T("Party Members"), string.IsNullOrWhiteSpace(dutyName) ? null : dutyName);
+        var headerMin = ImGui.GetItemRectMin();
+        var headerMax = ImGui.GetItemRectMax();
+        contentRight = headerMax.X;
+
+        // Aligned to the widest content of the previous frame rather than the window edge: this window
+        // auto-resizes, so anchoring to its edge would stop it ever shrinking.
+        var buttonSize = 26f * M3.Scale;
+        ImGui.SameLine();
+        var buttonX = MathF.Max(ImGui.GetCursorScreenPos().X, contentStartX + lastContentWidth - buttonSize);
+        ImGui.SetCursorScreenPos(new Vector2(buttonX, headerMin.Y + ((headerMax.Y - headerMin.Y - buttonSize) * 0.5f)));
+
+        if (M3Widgets.IconButton("##hide_party_overlay", FontAwesomeIcon.EyeSlash,
+                Loc.T("Hide the party list overlay. Turn it back on in settings or with /pcrparty."), diameter: buttonSize))
+        {
+            cfg.ShowPartyListOverlay = false;
+            cfg.Save();
+            IsOpen = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>The duty picker for encounter-specific lookups. Returns true when the selection changed.</summary>
+    private bool DrawDutySelector(out float right)
+    {
+        var label = Loc.T("Duty");
+        var width = 240f * M3.Scale;
+        var start = ImGui.GetCursorScreenPos();
+        var labelSize = ImGui.CalcTextSize(label);
+
+        ImGui.GetWindowDrawList().AddText(
+            new Vector2(start.X, start.Y + ((M3Widgets.ComboHeight - labelSize.Y) * 0.5f)),
+            M3.U32(OverlayWidgets.Muted), label);
+
+        var comboX = start.X + labelSize.X + M3.Space2;
+        ImGui.SetCursorScreenPos(new Vector2(comboX, start.Y));
+        right = comboX + width;
+        return M3Widgets.Combo("##party_duty_select", ref selectedDutyIndex, dutyNames, width);
+    }
+
+    /// <summary>
+    /// Draws the member table and returns the right edge of its widest cell content. This is measured
+    /// from the cells rather than the table's item rect, because ImGui clips that rect to the window's
+    /// previous size, and feeding it back into the header layout made the auto-resizing window oscillate.
+    /// </summary>
+    private float DrawPartyMemberTable(List<PartyMemberInfo> members, Configuration cfg)
+    {
+        var right = 0f;
         if (members.Count == 0)
         {
-            return;
+            return right;
         }
 
-        var columnCount = 1; // Player name is always shown
-        if (cfg.ShowPartyJobIcons)
-        {
-            columnCount++;
-        }
+        var hasTomestone = cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey);
+        var hasFFLogs = cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret);
+        var columnCount = 1 + (hasTomestone ? 1 : 0) + (hasFFLogs ? 1 : 0);
 
-        if (cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey))
+        if (!ImGui.BeginTable("##PartyMemberTable", columnCount, OverlayWidgets.TableFlags))
         {
-            columnCount++;
-        }
-
-        if (cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret))
-        {
-            columnCount++;
-        }
-
-        var flags = ImGuiTableFlags.Borders | 
-                    ImGuiTableFlags.RowBg | 
-                    ImGuiTableFlags.SizingFixedFit | 
-                    ImGuiTableFlags.NoHostExtendX;
-
-        if (!ImGui.BeginTable("##PartyMemberTable", columnCount, flags))
-        {
-            return;
+            return right;
         }
 
         // Setup columns
-        if (cfg.ShowPartyJobIcons)
-        {
-            ImGui.TableSetupColumn(Loc.T("Job"), ImGuiTableColumnFlags.WidthFixed, 30f);
-        }
-        ImGui.TableSetupColumn(Loc.T("Name"), ImGuiTableColumnFlags.WidthFixed);
-        if (cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey))
+        ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthFixed);
+        if (hasTomestone)
         {
             ImGui.TableSetupColumn("Tomestone", ImGuiTableColumnFlags.WidthFixed);
         }
-        if (cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret))
+
+        if (hasFFLogs)
         {
             ImGui.TableSetupColumn("FFLogs", ImGuiTableColumnFlags.WidthFixed);
         }
-        ImGui.TableHeadersRow();
 
-        // Draw each party member row
+        OverlayWidgets.BeginHeaderRow();
+        OverlayWidgets.HeaderCell(Loc.T("Name"));
+        if (hasTomestone)
+        {
+            OverlayWidgets.HeaderCell("Tomestone");
+        }
+
+        if (hasFFLogs)
+        {
+            OverlayWidgets.HeaderCell("FFLogs");
+        }
+
+        right = ImGui.GetItemRectMax().X;
+
+        // Draw each party member row; the last item of a row sits in the rightmost column.
         for (var i = 0; i < members.Count; i++)
         {
-            var member = members[i];
-            DrawPartyMemberRow(member, i, cfg);
+            DrawPartyMemberRow(members[i], i, cfg, hasTomestone, hasFFLogs);
+            right = MathF.Max(right, ImGui.GetItemRectMax().X);
         }
 
         ImGui.EndTable();
+        return right;
     }
 
-    private void DrawPartyMemberRow(PartyMemberInfo member, int index, Configuration cfg)
+    private void DrawPartyMemberRow(PartyMemberInfo member, int index, Configuration cfg, bool hasTomestone, bool hasFFLogs)
     {
-        ImGui.PushID($"party_{index}");
+        using var id = ImRaii.PushId($"party_{index}");
         ImGui.TableNextRow();
 
-        var jobIconId = 0u;
-        if (!string.IsNullOrWhiteSpace(member.JobAbbreviation))
-        {
-            var spec = FFLogsService.GetSpecForJob(member.JobAbbreviation);
-            var resolvedIconId = FFLogsService.GetJobIconIdForSpec(spec);
-            if (resolvedIconId.HasValue)
-            {
-                jobIconId = resolvedIconId.Value;
-            }
-        }
-
-        // ── Job icon column ──────────────────────────────────────────────────
+        // ── Player column: job icon + name ───────────────────────────────────
+        ImGui.TableNextColumn();
         if (cfg.ShowPartyJobIcons)
         {
-            ImGui.TableNextColumn();
-            try
-            {
-                var iconLookup = new GameIconLookup(jobIconId);
-                var iconHandle = PassportCheckerReborn.TextureProvider.GetFromGameIcon(iconLookup);
-                var texture = iconHandle.GetWrapOrDefault();
-
-                if (texture is not null)
-                {
-                    ImGui.Image(texture.Handle, new Vector2(24, 24));
-                }
-                else
-                {
-                    ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), member.JobAbbreviation);
-                }
-            }
-            catch
-            {
-                ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), member.JobAbbreviation);
-            }
+            OverlayWidgets.JobIcon(member.JobAbbreviation);
+            ImGui.SameLine();
         }
 
-        // ── Player name column ───────────────────────────────────────────────
-        ImGui.TableNextColumn();
-        var displayName = string.IsNullOrEmpty(member.World)
-            ? member.Name
-            : $"{member.Name}@{member.World}";
-        ImGui.TextUnformatted(displayName);
+        // Linked to the FFLogs character page (Tomestone has no KR data); built from name + world, no API call.
+        var fflogsUrl = string.IsNullOrEmpty(member.World) ? null : FFLogsService.GetCharacterPageUrl(member.Name, member.World);
+        if (fflogsUrl is null)
+        {
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextUnformatted(string.IsNullOrEmpty(member.World) ? member.Name : $"{member.Name}@{member.World}");
+        }
+        else
+        {
+            OverlayWidgets.LinkText($"{member.Name}@{member.World}", fflogsUrl, tooltip: Loc.T("Click to open FFLogs page"));
+        }
 
         // ── Tomestone data column ────────────────────────────────────────────
-        if (cfg.EnableTomestoneIntegration && !string.IsNullOrEmpty(cfg.TomestoneApiKey))
+        if (hasTomestone)
         {
             ImGui.TableNextColumn();
             if (tomestoneCache.TryGetValue(index, out var cachedTs))
             {
-                DrawTomestoneCell(cachedTs);
+                OverlayWidgets.TomestoneCell(cachedTs);
             }
             else
             {
-                ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Loading..."));
+                OverlayWidgets.Pending();
             }
         }
 
         // ── FFLogs data column ───────────────────────────────────────────────
-        if (cfg.EnableFFLogsIntegrationOverlay && !string.IsNullOrEmpty(cfg.FFLogsClientId) && !string.IsNullOrEmpty(cfg.FFLogsClientSecret))
+        if (hasFFLogs)
         {
             ImGui.TableNextColumn();
             if (fflogsCache.TryGetValue(index, out var cachedFf))
             {
-                PFWindow.DrawFFLogsCellContent(cachedFf, member);
+                OverlayWidgets.FFLogsCell(cachedFf, member);
             }
             else
             {
-                ImGui.TextColored(PFWindow.NoDataColor, Loc.T("Loading..."));
+                OverlayWidgets.Pending();
             }
-        }
-
-        ImGui.PopID();
-    }
-
-    private static void DrawTomestoneCell(TomestoneCharacterInfo? cachedTs)
-    {
-        if (cachedTs == null)
-        {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
-            return;
-        }
-
-        if (cachedTs.NoLogs)
-        {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("No Logs"));
-            return;
-        }
-
-        var hasClears = cachedTs.TotalClears.HasValue && cachedTs.TotalClears.Value > 0;
-        var hasProgPoint = !string.IsNullOrWhiteSpace(cachedTs.ProgPoint);
-        var hasBestParse = cachedTs.BestPercent.HasValue;
-
-        if (hasClears)
-        {
-            var clearsColor = new Vector4(0.4f, 0.8f, 0.4f, 1.0f);
-            var clearsText = "Cleared";
-            if (!string.IsNullOrWhiteSpace(cachedTs.CompletionWeek))
-            {
-                clearsText += $" ({cachedTs.CompletionWeek})";
-            }
-            ImGui.TextColored(clearsColor, clearsText);
-
-            if (hasBestParse)
-            {
-                ImGui.TextColored(clearsColor, $"Best: {cachedTs.BestPercent:F1}%");
-            }
-        }
-        else if (hasProgPoint)
-        {
-            var progText = cachedTs.ProgPoint!;
-            if (!string.IsNullOrWhiteSpace(cachedTs.DisplayPercent))
-            {
-                progText += $" ({cachedTs.DisplayPercent})";
-            }
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), progText);
-        }
-        else if (hasBestParse)
-        {
-            ImGui.TextColored(new Vector4(0.8f, 0.8f, 0.2f, 1.0f), $"Best: {cachedTs.BestPercent:F1}%");
-        }
-        else
-        {
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1.0f), Loc.T("Hidden Profile"));
         }
     }
 
