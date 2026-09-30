@@ -247,13 +247,8 @@ internal static class M3Widgets
 
 		if (icon != FontAwesomeIcon.None)
 		{
-			using (ImRaii.PushFont(UiBuilder.IconFont))
-			{
-				var glyph = icon.ToIconString();
-				var glyphSize = ImGui.CalcTextSize(glyph);
-				drawList.AddText(UiBuilder.IconFont, ImGui.GetFontSize(),
-					new Vector2(cursorX, min.Y + ((height - glyphSize.Y) * 0.5f)), M3.U32(content), glyph);
-			}
+			var glyphSize = M3Draw.MeasureIcon(icon);
+			M3Draw.Icon(drawList, icon, new Vector2(cursorX, min.Y + ((height - glyphSize.Y) * 0.5f)), content);
 
 			cursorX += iconWidth + gap;
 		}
@@ -506,13 +501,8 @@ internal static class M3Widgets
 
 		if (icon != FontAwesomeIcon.None)
 		{
-			using (ImRaii.PushFont(UiBuilder.IconFont))
-			{
-				var glyph = icon.ToIconString();
-				drawList.AddText(UiBuilder.IconFont, ImGui.GetFontSize(),
-					new Vector2(cursorX, min.Y + ((height - ImGui.CalcTextSize(glyph).Y) * 0.5f)),
-					M3.U32(selected ? tone : content), glyph);
-			}
+			var glyphSize = M3Draw.MeasureIcon(icon);
+			M3Draw.Icon(drawList, icon, new Vector2(cursorX, min.Y + ((height - glyphSize.Y) * 0.5f)), selected ? tone : content);
 
 			cursorX += iconWidth + gap;
 		}
@@ -574,14 +564,9 @@ internal static class M3Widgets
 		}
 		else
 		{
-			using (ImRaii.PushFont(UiBuilder.IconFont))
-			{
-				var glyph = icon.ToIconString();
-				var glyphSize = ImGui.CalcTextSize(glyph);
-				drawList.AddText(UiBuilder.IconFont, ImGui.GetFontSize(),
-					new Vector2(cursorX, min.Y + ((size.Y - glyphSize.Y) * 0.5f)), M3.U32(accent), glyph);
-				cursorX += glyphSize.X + (6f * scale);
-			}
+			var glyphSize = M3Draw.MeasureIcon(icon);
+			M3Draw.Icon(drawList, icon, new Vector2(cursorX, min.Y + ((size.Y - glyphSize.Y) * 0.5f)), accent);
+			cursorX += glyphSize.X + (6f * scale);
 		}
 
 		var textSize = ImGui.CalcTextSize(label);
@@ -978,7 +963,7 @@ internal static class M3Widgets
 		M3Draw.AccentRail(drawList, min.X + (2f * scale), 3f * scale, min.Y + (6f * scale), max.Y - (6f * scale), M3.Alpha(accent, 0.9f),
 			M3Draw.ResolveFade(40f, 0.35f, height));
 
-		M3Draw.Icon(drawList, icon, new Vector2(min.X + padding.X, min.Y + padding.Y + (ImGui.GetTextLineHeight() * 0.1f)), accent);
+		M3Draw.Icon(drawList, icon, new Vector2(min.X + padding.X, min.Y + padding.Y + ((ImGui.GetTextLineHeight() - M3Draw.MeasureIcon(icon).Y) * 0.5f)), accent);
 		_ = M3Draw.WrappedText(message, new Vector2(min.X + padding.X + iconWidth, min.Y + padding.Y), textWidth, M3.Alpha(s.OnSurface, 0.94f));
 
 		var clicked = false;

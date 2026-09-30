@@ -212,6 +212,7 @@ public static class Loc
         ["Text"] = "글자",
         ["Text size"] = "글자 크기",
         ["Size of the text in the plugin's windows, relative to Dalamud's default font."] = "플러그인 창의 글자 크기입니다. Dalamud 기본 글꼴 크기가 기준입니다.",
+        ["Preparing the new text size…"] = "새 글자 크기를 준비하는 중…",
         ["Theme"] = "테마",
         ["Every color in the plugin's windows is generated from one accent color."] = "플러그인 창의 모든 색상은 하나의 강조 색상에서 만들어집니다.",
         ["Accent color"] = "강조 색상",

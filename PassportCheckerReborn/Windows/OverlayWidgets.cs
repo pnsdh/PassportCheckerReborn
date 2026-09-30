@@ -28,7 +28,8 @@ internal static class OverlayWidgets
         var s = M3.Scheme;
         var scale = M3.Scale;
         var start = ImGui.GetCursorScreenPos();
-        var iconBox = 28f * scale;
+        // Grows with the icon, which follows the text size.
+        var iconBox = MathF.Max(28f * scale, M3Draw.MeasureIcon(icon).Y * 1.5f);
         var lineGap = 1f * scale;
 
         Vector2 titleSize;

@@ -65,30 +65,30 @@ internal static class M3
 	/// <summary>The user's text size multiplier; the settings offer a few fixed steps.</summary>
 	public static float TextScale => Math.Clamp(PassportCheckerReborn.Config.UiTextScale, 0.8f, 1.6f);
 
-	public static ImFontPtr HeadlineSmall => FontManager.GetFont(HeadlineSmallRatio * TextScale);
-	public static ImFontPtr TitleLarge => FontManager.GetFont(TitleLargeRatio * TextScale);
-	public static ImFontPtr TitleMedium => FontManager.GetFont(TitleMediumRatio * TextScale);
+	// These resolve against the text size currently shown, which lags the setting while a new size builds.
+	public static ImFontPtr HeadlineSmall => FontManager.GetFont(HeadlineSmallRatio);
+	public static ImFontPtr TitleLarge => FontManager.GetFont(TitleLargeRatio);
+	public static ImFontPtr TitleMedium => FontManager.GetFont(TitleMediumRatio);
 
 	/// <summary>Body text. Windows push it for their whole content, so plain ImGui text follows the text size setting.</summary>
-	public static ImFontPtr Body => FontManager.GetFont(BodyRatio * TextScale);
+	public static ImFontPtr Body => FontManager.GetFont(BodyRatio);
 
 	/// <summary>Secondary prose meant to be read, such as a setting's supporting text or a page subtitle.</summary>
-	public static ImFontPtr BodySmall => FontManager.GetFont(BodySmallRatio * TextScale);
+	public static ImFontPtr BodySmall => FontManager.GetFont(BodySmallRatio);
 
 	/// <summary>Short labels: table headers, badges, rail labels.</summary>
-	public static ImFontPtr LabelSmall => FontManager.GetFont(LabelSmallRatio * TextScale);
+	public static ImFontPtr LabelSmall => FontManager.GetFont(LabelSmallRatio);
 
-	/// <summary>Starts building every font of the type scale at the current text size, in one atlas build.</summary>
-	public static void PreloadFonts()
+	/// <summary>Font Awesome at body text size, so icons scale with the text beside them.</summary>
+	public static ImFontPtr IconFont => FontManager.GetIconFont();
+
+	/// <summary>
+	/// Builds the fonts for the current text size setting and switches to them once they are all ready.
+	/// Runs every frame from the plugin's draw handler, ahead of the windows.
+	/// </summary>
+	public static void UpdateFonts()
 	{
-		var textScale = TextScale;
-		var scales = new float[TypeScale.Length];
-		for (var i = 0; i < TypeScale.Length; i++)
-		{
-			scales[i] = TypeScale[i] * textScale;
-		}
-
-		FontManager.Preload(scales);
+		FontManager.Update(TextScale, TypeScale);
 	}
 
 	public static Vector4 Alpha(Vector4 color, float alpha)

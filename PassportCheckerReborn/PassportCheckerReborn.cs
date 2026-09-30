@@ -34,7 +34,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
-    internal const string Version = "7.5.6.0";
+    internal const string Version = "7.5.6.1";
 
     /// <summary>
     /// Whether the game is the Korean client. Dalamud's <see cref="ClientLanguage"/> enum has no
@@ -70,8 +70,6 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Loc.Language = Configuration.Language;  // early; re-applied after client detection below
 
-        // Hangul fonts take seconds to build; start now so they're ready before any window opens.
-        M3.PreloadFonts();
 
         TomestoneService = new TomestoneService(this);
         FFLogsService = new FFLogsService(this);
@@ -115,6 +113,8 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             // Register framework update for party list monitoring
             Framework.Update += PartyListMonitorService.OnFrameworkUpdate;
 
+            // Fonts first, so every window this frame draws with the same text size.
+            PluginInterface.UiBuilder.Draw += M3.UpdateFonts;
             PluginInterface.UiBuilder.Draw += ManageWindowStates;
             PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
@@ -135,6 +135,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             // Unregister framework update for party list monitoring
             Framework.Update -= PartyListMonitorService.OnFrameworkUpdate;
 
+            PluginInterface.UiBuilder.Draw -= M3.UpdateFonts;
             PluginInterface.UiBuilder.Draw -= ManageWindowStates;
             PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;

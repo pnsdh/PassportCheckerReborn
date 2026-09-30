@@ -1066,7 +1066,12 @@ public class MainWindow : Window, IDisposable
             {
                 cfg.UiTextScale = TextScaleSteps[picked];
                 cfg.Save();
-                M3.PreloadFonts();
+            }
+
+            // The previous size stays on screen until the new one has finished building.
+            if (FontManager.IsPending)
+            {
+                StatusLine(FontAwesomeIcon.HourglassHalf, Loc.T("Preparing the new text size…"), Muted);
             }
         }
 

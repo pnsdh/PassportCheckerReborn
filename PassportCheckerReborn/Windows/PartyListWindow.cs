@@ -303,7 +303,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
 
         // Aligned to the widest content of the previous frame rather than the window edge: this window
         // auto-resizes, so anchoring to its edge would stop it ever shrinking.
-        var buttonSize = 26f * M3.Scale;
+        var buttonSize = MathF.Max(26f * M3.Scale, M3Draw.MeasureIcon(FontAwesomeIcon.EyeSlash).Y * 1.4f);
         ImGui.SameLine();
         var buttonX = MathF.Max(ImGui.GetCursorScreenPos().X, contentStartX + lastContentWidth - buttonSize);
         ImGui.SetCursorScreenPos(new Vector2(buttonX, headerMin.Y + ((headerMax.Y - headerMin.Y - buttonSize) * 0.5f)));

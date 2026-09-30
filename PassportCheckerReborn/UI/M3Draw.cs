@@ -113,23 +113,46 @@ internal static class M3Draw
 
 	public static Vector2 MeasureIcon(FontAwesomeIcon icon)
 	{
-		using var font = ImRaii.PushFont(UiBuilder.IconFont);
+		using var font = ImRaii.PushFont(M3.IconFont);
 		return ImGui.CalcTextSize(icon.ToIconString());
 	}
 
+	/// <summary>
+	/// Draws the icon in the box of size <see cref="MeasureIcon"/> whose top-left is <paramref name="position"/>,
+	/// with its inked shape centred in that box. Callers lay the box out beside text; drawing the glyph at the
+	/// box origin would leave many icons visibly off-centre, because the shape sits unevenly inside its advance
+	/// width and line height.
+	/// </summary>
 	public static void Icon(ImDrawListPtr drawList, FontAwesomeIcon icon, Vector2 position, Vector4 color)
 	{
-		using var font = ImRaii.PushFont(UiBuilder.IconFont);
-		drawList.AddText(UiBuilder.IconFont, ImGui.GetFontSize(), position, M3.U32(color), icon.ToIconString());
+		var size = MeasureIcon(icon);
+		IconCentered(drawList, icon, position, position + size, color);
 	}
 
-	public static void IconCentered(ImDrawListPtr drawList, FontAwesomeIcon icon, Vector2 min, Vector2 max, Vector4 color)
+	/// <summary>Draws the icon with its inked shape centred in the box from <paramref name="min"/> to <paramref name="max"/>.</summary>
+	public static unsafe void IconCentered(ImDrawListPtr drawList, FontAwesomeIcon icon, Vector2 min, Vector2 max, Vector4 color)
 	{
-		using var font = ImRaii.PushFont(UiBuilder.IconFont);
+		using var font = ImRaii.PushFont(M3.IconFont);
 		var text = icon.ToIconString();
-		var size = ImGui.CalcTextSize(text);
-		var position = min + ((max - min - size) * 0.5f);
-		drawList.AddText(UiBuilder.IconFont, ImGui.GetFontSize(), position, M3.U32(color), text);
+		var fontSize = ImGui.GetFontSize();
+		var center = (min + max) * 0.5f;
+
+		Vector2 position;
+		var iconFont = M3.IconFont;
+		var glyph = iconFont.FindGlyph((ushort)icon);
+		if (glyph != null && glyph->X1 > glyph->X0 && glyph->Y1 > glyph->Y0)
+		{
+			// Glyph bounds are in the font's own units, relative to the pen position.
+			var scale = fontSize / iconFont.FontSize;
+			var inkCenter = new Vector2((glyph->X0 + glyph->X1) * 0.5f, (glyph->Y0 + glyph->Y1) * 0.5f) * scale;
+			position = center - inkCenter;
+		}
+		else
+		{
+			position = min + ((max - min - ImGui.CalcTextSize(text)) * 0.5f);
+		}
+
+		drawList.AddText(iconFont, fontSize, position, M3.U32(color), text);
 	}
 
 	/// <summary>Draws wrapped text at an absolute screen position and returns the bottom edge.</summary>

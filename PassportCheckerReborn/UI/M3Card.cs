@@ -91,8 +91,16 @@ internal static class M3Card
 
 			if (icon != FontAwesomeIcon.None)
 			{
-				M3Draw.Icon(drawList, icon, new Vector2(textX, cursorY + (1f * scale)), tone);
-				textX += M3Draw.MeasureIcon(icon).X + (10f * scale);
+				// Centred on the title line, which is taller than the icon line once the title font is scaled up.
+				float titleLineHeight;
+				using (ImRaii.PushFont(M3.TitleMedium))
+				{
+					titleLineHeight = ImGui.GetTextLineHeight();
+				}
+
+				var iconSize = M3Draw.MeasureIcon(icon);
+				M3Draw.Icon(drawList, icon, new Vector2(textX, cursorY + ((titleLineHeight - iconSize.Y) * 0.5f)), tone);
+				textX += iconSize.X + (10f * scale);
 			}
 
 			float titleHeight;
