@@ -1,6 +1,7 @@
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
+using PassportCheckerReborn.Services;
 using PassportCheckerReborn.UI;
 using System;
 using System.Collections.Generic;
@@ -488,16 +489,76 @@ public class MainWindow : Window, IDisposable
 
             var keepOpen = cfg.PreventAutoClosingOnPartyChanges2;
             if (SwitchRow(Loc.T("Keep the Party Finder window open when the party changes"),
-                    Loc.T("The game normally closes the Party Finder detail window when your party composition changes; this keeps it (and the member overlay) open."),
-                    ref keepOpen))
+                    WhenAvailable(Loc.T("Stops the Party Finder closing itself when your party changes, and reloads the listing you were viewing."),
+                        PFWindowManager.Unavailable),
+                    ref keepOpen, enabled: !PFWindowManager.Unavailable))
             {
                 cfg.PreventAutoClosingOnPartyChanges2 = keepOpen;
                 cfg.Save();
+                PFWindowManager.ApplySetting();
             }
         }
 
         using (M3Card.Begin("general_listings", Loc.T("Listings"), FontAwesomeIcon.ListUl))
         {
+            var tweaks = plugin.PartyFinderListTweaks;
+
+            var sorting = cfg.EnableTrueTimeBasedSorting;
+            if (SwitchRow(Loc.T("True time-based sorting"),
+                    WhenAvailable(Loc.T("Orders each page by the time listings have left, instead of grouping them by duty."),
+                        tweaks.SortingUnavailable),
+                    ref sorting, enabled: !tweaks.SortingUnavailable))
+            {
+                cfg.EnableTrueTimeBasedSorting = sorting;
+                cfg.Save();
+                tweaks.ApplySorting();
+                tweaks.RefreshListings();
+            }
+
+            if (cfg.EnableTrueTimeBasedSorting && !tweaks.SortingUnavailable)
+            {
+                using var group = M3SubGroup.Begin();
+                M3Segment[] orders =
+                [
+                    new(Loc.T("Newest first"), FontAwesomeIcon.SortAmountDown),
+                    new(Loc.T("Oldest first"), FontAwesomeIcon.SortAmountUp),
+                ];
+                var order = SegmentedRow(Loc.T("Order"), Loc.T("The Party Finder's own sort button flips it."),
+                    "time_sort_order", orders, cfg.TimeSortNewestFirst ? 0 : 1);
+                if (order >= 0)
+                {
+                    cfg.TimeSortNewestFirst = order == 0;
+                    cfg.Save();
+                    tweaks.RefreshListings();
+                }
+            }
+
+            var expand = cfg.ExpandListingsTo100PerPage;
+            if (SwitchRow(Loc.T("Show 100 listings per page"),
+                    WhenAvailable(Loc.T("Asks the server for 100 listings at a time instead of 50."), tweaks.PageSizeUnavailable),
+                    ref expand, enabled: !tweaks.PageSizeUnavailable))
+            {
+                cfg.ExpandListingsTo100PerPage = expand;
+                cfg.Save();
+                tweaks.ApplyPageSize();
+                tweaks.RefreshListings();
+            }
+
+            var jobFilter = cfg.EnableOneClickJobFilter;
+            if (SwitchRow(Loc.T("One-click job filter button"),
+                    Loc.T("Adds a button above the Party Finder that hides high-end duty listings with no open slot for your current job."),
+                    ref jobFilter))
+            {
+                cfg.EnableOneClickJobFilter = jobFilter;
+                cfg.Save();
+
+                // A filter left on would keep hiding listings with no button left to turn it off.
+                if (!jobFilter && tweaks.JobFilterActive)
+                {
+                    tweaks.ToggleJobFilter();
+                }
+            }
+
             var autoRefresh = cfg.EnableAutomaticRefresh;
             if (SwitchRow(Loc.T("Refresh listings automatically"), Loc.T("Reloads the Party Finder list on a timer while you're browsing it."), ref autoRefresh))
             {
@@ -604,6 +665,8 @@ public class MainWindow : Window, IDisposable
             }
         }
 
+        DrawKnownPlayersCard();
+
         // Name freshness — re-verify stale cached names against the adventure plate. Independent of the
         // member overlay (it maintains the shared name cache), so it stays available regardless.
         using (M3Card.Begin("overlays_name_freshness", Loc.T("Name freshness"), FontAwesomeIcon.History,
@@ -698,6 +761,66 @@ public class MainWindow : Window, IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>Which known players the member info overlay highlights, and the highlight color.</summary>
+    private void DrawKnownPlayersCard()
+    {
+        var cfg = Configuration;
+        var known = plugin.KnownPlayerService;
+
+        using var card = M3Card.Begin("overlays_known_players", Loc.T("Known players"), FontAwesomeIcon.UserCheck,
+            subtitle: Loc.T("Highlights players you know in the member info overlay."));
+
+        string Remembered(KnownPlayerSource source) => string.Format(Loc.T("{0} remembered for this character"), known.Count(source));
+
+        var friends = cfg.HighlightFriends;
+        if (SwitchRow(Loc.T("Friends"), Remembered(KnownPlayerSource.Friend), ref friends))
+        {
+            cfg.HighlightFriends = friends;
+            cfg.Save();
+        }
+
+        var freeCompany = cfg.HighlightFreeCompanyMembers;
+        if (SwitchRow(Loc.T("Free company members"), Remembered(KnownPlayerSource.FreeCompany), ref freeCompany))
+        {
+            cfg.HighlightFreeCompanyMembers = freeCompany;
+            cfg.Save();
+        }
+
+        var linkshell = cfg.HighlightLinkshellMembers;
+        if (SwitchRow(Loc.T("Linkshell members"), Remembered(KnownPlayerSource.Linkshell), ref linkshell))
+        {
+            cfg.HighlightLinkshellMembers = linkshell;
+            cfg.Save();
+        }
+
+        var crossWorld = cfg.HighlightCrossWorldLinkshellMembers;
+        if (SwitchRow(Loc.T("Cross-world linkshell members"), Remembered(KnownPlayerSource.CrossWorldLinkshell), ref crossWorld))
+        {
+            cfg.HighlightCrossWorldLinkshellMembers = crossWorld;
+            cfg.Save();
+        }
+
+        var color = cfg.KnownPlayerHighlightColor;
+        if (ColorRow(Loc.T("Highlight color"), "##known_player_color", ref color))
+        {
+            cfg.KnownPlayerHighlightColor = color with { W = 1f };
+            savePending = true;
+        }
+
+        // Linkshell lists only ever grow (the game holds one shell at a time), so they can be reset here.
+        if (ButtonRow(Loc.T("Forget remembered linkshell members"),
+                Loc.T("Linkshell lists are added to as you view each shell, so people who left stay listed until cleared."),
+                "##known_ls_clear", Loc.T("Clear"), FontAwesomeIcon.TrashAlt))
+        {
+            known.Clear(KnownPlayerSource.Linkshell);
+            known.Clear(KnownPlayerSource.CrossWorldLinkshell);
+        }
+
+        StatusLine(FontAwesomeIcon.InfoCircle, Loc.T(
+            "The game only loads these lists when you open their window (Friend List, Free Company, Linkshell, " +
+            "Cross-world Linkshell). Open each once and they are remembered for this character."), Muted);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1223,10 +1346,13 @@ public class MainWindow : Window, IDisposable
 
         using (M3Card.Begin("about_markers", Loc.T("Overlay markers"), FontAwesomeIcon.Tags))
         {
+            BadgeRow(Loc.T("Known player"), Configuration.KnownPlayerHighlightColor,
+                Loc.T("Friend, free company or linkshell member (the whole row is tinted)"), asText: true);
             BadgeRow("PT", s.Info, Loc.T("Name recovered from the PlayerTrack database"));
             BadgeRow("BL", s.Error, Loc.T("On your in-game blacklist"));
             BadgeRow(Loc.T("Private"), s.OnSurfaceVariant, Loc.T("Adventure plate is hidden"));
             BadgeRow(Loc.T("Lookup failed"), s.Error, Loc.T("FFLogs request failed — refresh to retry"), asText: true);
+            BadgeRow(Loc.T("Not on FFLogs"), OverlayWidgets.Muted, Loc.T("FFLogs has no character with this name on this server"), asText: true);
         }
 
         using (M3Card.Begin("about_caches", Loc.T("Caches"), FontAwesomeIcon.Database))
@@ -1340,6 +1466,16 @@ public class MainWindow : Window, IDisposable
         var picked = M3Widgets.SegmentedButtons(id, segments, selectedIndex, width);
         M3SettingRow.End(row);
         return picked;
+    }
+
+    private static bool ColorRow(string label, string id, ref Vector4 color)
+    {
+        var diameter = 28f * M3.Scale;
+        var row = M3SettingRow.Begin(label, null, new Vector2(diameter, diameter));
+        ImGui.SetCursorScreenPos(row.ControlPosition);
+        var changed = M3Widgets.ColorSwatch(id, ref color);
+        M3SettingRow.End(row);
+        return changed;
     }
 
     private static bool ButtonRow(string label, string? supporting, string id, string buttonLabel, FontAwesomeIcon icon)
@@ -1485,6 +1621,14 @@ public class MainWindow : Window, IDisposable
         ImGui.SetCursorScreenPos(new Vector2(start.X + iconSize.X + M3.Space2, start.Y));
         using var textColor = ImRaii.PushColor(ImGuiCol.Text, color);
         ImGui.TextWrapped(message);
+    }
+
+    /// <summary>A setting's description, replaced by a notice when a game update has broken the hook behind it.</summary>
+    private static string WhenAvailable(string description, bool unavailable)
+    {
+        return unavailable
+            ? Loc.T("Unavailable: a game update changed what this setting relies on. It will return once the plugin is updated.")
+            : description;
     }
 
     private static bool HasFFLogsCredentials(Configuration cfg)

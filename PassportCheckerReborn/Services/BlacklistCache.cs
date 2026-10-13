@@ -71,7 +71,16 @@ public sealed class BlacklistCache : IDisposable
     /// </summary>
     public void ReplaceAll(IEnumerable<string> keys)
     {
+        var keyList = keys as IReadOnlyCollection<string> ?? [.. keys];
+
+        // The blacklist is re-read on every Party Finder open; skip the disk write when nothing changed.
+        if (IsSameSet(keyList))
+        {
+            return;
+        }
+
         entries.Clear();
+        keys = keyList;
         foreach (var key in keys)
         {
             var atIndex = key.IndexOf('@');
@@ -81,6 +90,24 @@ public sealed class BlacklistCache : IDisposable
         }
         dirty = true;
         Save();
+    }
+
+    private bool IsSameSet(IReadOnlyCollection<string> keys)
+    {
+        if (keys.Count != entries.Count)
+        {
+            return false;
+        }
+
+        foreach (var key in keys)
+        {
+            if (!entries.ContainsKey(key))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Removes all entries and saves an empty cache to disk.</summary>

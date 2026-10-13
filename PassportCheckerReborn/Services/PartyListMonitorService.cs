@@ -1,7 +1,5 @@
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
-using ECommons.DalamudServices;
-using ECommons.GameHelpers;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using Lumina.Excel.Sheets;
 using PassportCheckerReborn.Windows;
@@ -28,12 +26,12 @@ public sealed class PartyListMonitorService(PassportCheckerReborn plugin) : IDis
     {
         try
         {
-            if (!Player.Available)
+            if (!PassportCheckerReborn.PlayerState.IsLoaded)
             {
                 return;
             }
 
-            if (Svc.Condition?[ConditionFlag.InCombat] ?? false)
+            if (PassportCheckerReborn.Condition[ConditionFlag.InCombat])
             {
                 return;
             }

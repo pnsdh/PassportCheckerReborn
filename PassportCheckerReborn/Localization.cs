@@ -61,9 +61,27 @@ public static class Loc
         ["Shows each player's job icon in the member info and party list overlays."]
             = "멤버 정보·파티 목록 오버레이에 각 플레이어의 직업 아이콘을 표시합니다.",
         ["Keep the Party Finder window open when the party changes"] = "파티 구성이 바뀌어도 파티 찾기 창 유지",
-        ["The game normally closes the Party Finder detail window when your party composition changes; this keeps it (and the member overlay) open."]
-            = "게임은 파티 구성이 바뀌면 파티 찾기 상세 창을 자동으로 닫습니다. 이 옵션은 창(과 멤버 오버레이)을 계속 열어둡니다.",
+        ["Stops the Party Finder closing itself when your party changes, and reloads the listing you were viewing."]
+            = "파티 구성이 바뀌어도 파티 찾기 창이 닫히지 않게 하고, 보던 모집을 다시 불러옵니다.",
+        ["Unavailable: a game update changed what this setting relies on. It will return once the plugin is updated."]
+            = "사용 불가: 게임 업데이트로 이 설정이 의존하는 부분이 바뀌었습니다. 플러그인이 업데이트되면 다시 사용할 수 있습니다.",
         ["Listings"] = "모집 목록",
+        ["True time-based sorting"] = "남은 시간 순 정렬",
+        ["Orders each page by the time listings have left, instead of grouping them by duty."] = "임무별로 묶는 대신, 각 페이지의 모집을 남은 시간 순으로 정렬합니다.",
+        ["Order"] = "정렬 순서",
+        ["Newest first"] = "최신 순",
+        ["Oldest first"] = "오래된 순",
+        ["The Party Finder's own sort button flips it."] = "파티 찾기의 정렬 버튼을 누르면 순서가 반대로 바뀝니다.",
+        ["Show 100 listings per page"] = "페이지당 모집 100개 표시",
+        ["Asks the server for 100 listings at a time instead of 50."] = "서버에 모집을 50개 대신 100개씩 요청합니다.",
+        ["One-click job filter button"] = "원클릭 직업 필터 버튼",
+        ["Adds a button above the Party Finder that hides high-end duty listings with no open slot for your current job."] = "파티 찾기 위에 버튼을 추가합니다. 누르면 현재 직업으로 들어갈 빈자리가 없는 고난도 임무 모집을 숨깁니다.",
+        ["Job filter"] = "직업 필터",
+        ["Open {0} slots only"] = "{0} 빈자리만",
+        ["Filter for {0}"] = "{0} 빈자리만 보기",
+        ["Switch to a combat class or job to filter listings."] = "전투 직업으로 바꾸면 모집을 필터링할 수 있습니다.",
+        ["Hiding high-end duty listings with no open slot for {0}. Click to show them again."] = "{0} 빈자리가 없는 고난도 임무 모집을 숨기는 중입니다. 클릭하면 다시 표시합니다.",
+        ["Hide high-end duty listings with no open slot for {0}."] = "{0} 빈자리가 없는 고난도 임무 모집을 숨깁니다.",
         ["Refresh listings automatically"] = "파티 찾기 목록 자동 새로 고침",
         ["Reloads the Party Finder list on a timer while you're browsing it."]
             = "파티 찾기 목록을 보는 동안 일정 간격으로 다시 불러옵니다.",
@@ -73,10 +91,7 @@ public static class Loc
         ["Adds a 'View Recruitment' option when you right-click a player. If they're hosting a Party Finder listing, it finds and opens it."]
             = "플레이어를 우클릭하면 메뉴에 '모집 정보 보기'가 추가됩니다. 그 사람이 파티 찾기 모집을 올렸다면 그 모집을 찾아서 열어줍니다.",
         ["View Recruitment"] = "모집 정보 보기",
-        ["No active Party Finder listing found for this player."] = "이 플레이어의 활성 파티 찾기 모집을 찾지 못했습니다.",
-        ["Unable to open Party Finder."] = "파티 찾기를 열 수 없습니다.",
-        ["Listing by {0} not found on the current page. It may have expired or be on a different category/page."]
-            = "{0}님의 모집을 현재 페이지에서 찾지 못했습니다. 만료됐거나 다른 카테고리/페이지에 있을 수 있습니다.",
+        ["Unable to request this player's Party Finder listing."] = "이 플레이어의 파티 찾기 모집을 요청할 수 없습니다.",
         ["Blacklist"] = "차단 목록",
         ["Flag blacklisted players"] = "차단 목록 플레이어 표시",
         ["Marks players on your in-game blacklist with a BL tag in the member info overlay."]
@@ -100,6 +115,23 @@ public static class Loc
         ["Show resolved player names"] = "확인된 플레이어 이름 표시",
         ["Shows Name@World once a player is resolved, instead of \"Player 1\"."]
             = "이름이 확인되면 \"플레이어 1\" 대신 이름@서버를 표시합니다.",
+        ["Known players"] = "아는 플레이어",
+        ["Highlights players you know in the member info overlay."] = "멤버 정보 오버레이에서 아는 플레이어를 강조합니다.",
+        ["{0} remembered for this character"] = "이 캐릭터 기준 {0}명 기억 중",
+        ["Friends"] = "친구",
+        ["Free company members"] = "자유부대원",
+        ["Linkshell members"] = "링크셸 멤버",
+        ["Cross-world linkshell members"] = "크로스월드 링크셸 멤버",
+        ["Highlight color"] = "강조 색상",
+        ["Forget remembered linkshell members"] = "기억한 링크셸 멤버 비우기",
+        ["Linkshell lists are added to as you view each shell, so people who left stay listed until cleared."] = "링크셸 명단은 셸을 볼 때마다 누적되므로, 탈퇴한 사람도 비우기 전까지 남아 있습니다.",
+        ["The game only loads these lists when you open their window (Friend List, Free Company, Linkshell, Cross-world Linkshell). Open each once and they are remembered for this character."] = "게임은 이 명단들을 해당 창(친구 목록, 자유부대, 링크셸, 크로스월드 링크셸)을 열 때만 불러옵니다. 한 번씩 열어 두면 이 캐릭터 기준으로 기억합니다.",
+        ["Known player"] = "아는 플레이어",
+        ["Friend, free company or linkshell member (the whole row is tinted)"] = "친구, 자유부대원, 링크셸 멤버 (줄 전체가 강조됨)",
+        ["Friend"] = "친구",
+        ["Free Company"] = "자유부대",
+        ["Linkshell"] = "링크셸",
+        ["Cross-world Linkshell"] = "크로스월드 링크셸",
         ["Name freshness"] = "이름 최신화",
         ["Keeps cached player names up to date."] = "저장된 플레이어 이름을 최신 상태로 유지합니다.",
         ["Re-verify stale player names via adventure plate"] = "모험가 카드로 오래된 플레이어 이름 재확인",
@@ -296,6 +328,10 @@ public static class Loc
 
         // ── Overlay cells (shared by both overlays) ──────────────────────────
         ["Lookup failed"] = "조회 실패",
+        ["Not on FFLogs"] = "FFLogs 미등록",
+        ["FFLogs has no character with this name on this server. They may never have uploaded a log, or renamed or changed servers recently."]
+            = "FFLogs에 이 서버의 이 이름으로 된 캐릭터가 없습니다. 로그를 올린 적이 없거나, 최근 닉네임을 변경했거나 서버를 이전했을 수 있습니다.",
+        ["FFLogs has no character with this name on this server"] = "FFLogs에 이 이름의 캐릭터가 없음",
         ["FFLogs lookup failed (network or rate limit) — refresh to retry."] = "FFLogs 조회 실패 (네트워크 또는 요청 한도) — 새로고침하여 재시도.",
         ["No Logs"] = "기록 없음",
         ["No logs"] = "기록 없음",

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 
 namespace PassportCheckerReborn.Services;
 
@@ -75,12 +76,17 @@ public sealed class CidCache : IDisposable
     private readonly ConcurrentDictionary<ulong, CidCacheEntry> entries = new();
     private volatile bool dirty;
 
+    // Disk writes and deletes run one after another on a background task chain (see Enqueue).
+    private readonly object ioLock = new();
+    private Task ioChain = Task.CompletedTask;
+
     /// <summary>Maximum number of previous names retained per entry.</summary>
     private const int MaxPreviousNames = 10;
 
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
     {
-        WriteIndented = true,
+        // Not indented: the cache can hold tens of thousands of entries.
+        WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter() },
     };
@@ -237,10 +243,14 @@ public sealed class CidCache : IDisposable
     /// </summary>
     public void Clear()
     {
-        entries.Clear();
-        dirty = false;
+        lock (ioLock)
+        {
+            entries.Clear();
+            dirty = false;
+        }
 
-        try
+        // Queued behind any pending write, so an earlier save can't recreate the file after the delete.
+        Enqueue(() =>
         {
             if (File.Exists(filePath))
             {
@@ -248,15 +258,13 @@ public sealed class CidCache : IDisposable
             }
 
             PassportCheckerReborn.Log.Information("[CidCache] Cleared all cached names.");
-        }
-        catch (Exception ex)
-        {
-            PassportCheckerReborn.Log.Warning(ex, "[CidCache] Failed to delete CID cache file.");
-        }
+        });
     }
 
     /// <summary>
-    /// Flushes any pending changes to disk. No-op if the cache is not dirty.
+    /// Flushes any pending changes to disk. No-op if the cache is not dirty. The snapshot is taken here, but
+    /// serialising and writing (megabytes for a large cache) happen on a background task, so calling this
+    /// from the framework thread (e.g. when the Party Finder detail closes) doesn't hitch a frame.
     /// </summary>
     public void Save()
     {
@@ -265,33 +273,70 @@ public sealed class CidCache : IDisposable
             return;
         }
 
-        try
+        // Save runs from both the framework thread and the background resolve task. Taking the snapshot and
+        // queueing it under the queue's lock keeps the writes in snapshot order, so an older snapshot can never
+        // land after a newer one (or after Clear's delete) and overwrite it.
+        lock (ioLock)
         {
-            // JSON doesn't allow integer keys, so we serialise the dictionary
-            // with the Content ID rendered as a decimal string.
-            var serialisable = new Dictionary<string, CidCacheEntry>(entries.Count);
-            foreach (var (id, entry) in entries)
-            {
-                serialisable[id.ToString()] = entry;
-            }
-
-            var json = System.Text.Json.JsonSerializer.Serialize(serialisable, JsonOptions);
-            File.WriteAllText(filePath, json);
             dirty = false;
 
-            PassportCheckerReborn.Log.Debug($"[CidCache] Saved {entries.Count} entries to disk.");
-        }
-        catch (Exception ex)
-        {
-            PassportCheckerReborn.Log.Warning(ex, "[CidCache] Failed to save CID cache.");
+            // JSON doesn't allow integer keys, so the Content ID is rendered as a decimal string. Entries are
+            // immutable records, so the snapshot can be serialised later on another thread.
+            var snapshot = new Dictionary<string, CidCacheEntry>(entries.Count);
+            foreach (var (id, entry) in entries)
+            {
+                snapshot[id.ToString()] = entry;
+            }
+
+            Enqueue(() =>
+            {
+                // Write to a temporary file and swap it in, so an interrupted write can't leave a truncated cache.
+                var json = System.Text.Json.JsonSerializer.Serialize(snapshot, JsonOptions);
+                var tempPath = filePath + ".tmp";
+                File.WriteAllText(tempPath, json);
+                File.Move(tempPath, filePath, overwrite: true);
+                PassportCheckerReborn.Log.Debug($"[CidCache] Saved {snapshot.Count} entries to disk.");
+            });
         }
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────
 
-    public void Dispose() => Save();
+    public void Dispose()
+    {
+        Save();
+
+        // Finish the queued writes before the plugin unloads.
+        try
+        {
+            ioChain.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, "[CidCache] Waiting for pending CID cache writes failed.");
+        }
+    }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// <summary>Runs <paramref name="io"/> after every previously queued disk operation, off the calling thread.</summary>
+    private void Enqueue(Action io)
+    {
+        lock (ioLock)
+        {
+            ioChain = ioChain.ContinueWith(_ =>
+            {
+                try
+                {
+                    io();
+                }
+                catch (Exception ex)
+                {
+                    PassportCheckerReborn.Log.Warning(ex, "[CidCache] Disk operation failed.");
+                }
+            }, TaskScheduler.Default);
+        }
+    }
 
     private void Load()
     {

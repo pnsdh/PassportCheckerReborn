@@ -26,16 +26,16 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 {
     private readonly PassportCheckerReborn plugin = plugin;
 
-    // Per-member caches keyed by ContentId (player identity), NOT row index — so when the listing's roster
+    // Per-member caches keyed by player identity (MemberKey), NOT row index — so when the listing's roster
     // shifts (a member joins/leaves) each player keeps their own result and only genuinely-new members are
     // fetched; nothing is misattributed to a shifted row and the display doesn't flicker. Cleared only when
     // the DUTY changes (the cached encounter data no longer applies).
     // ConcurrentDictionary: the background batch tasks write entries (progressively) while the UI thread reads
     // them each frame.
-    private ConcurrentDictionary<ulong, EncounterParseResult?> fflogsEncounterCache = new();
+    private ConcurrentDictionary<MemberKey, EncounterParseResult?> fflogsEncounterCache = new();
     private bool fflogsBatchInProgress;
 
-    private ConcurrentDictionary<ulong, TomestoneCharacterInfo?> tomestoneInfoCache = new();
+    private ConcurrentDictionary<MemberKey, TomestoneCharacterInfo?> tomestoneInfoCache = new();
     private bool tomestoneBatchInProgress;
 
     // The duty the caches currently hold data for. When it changes the caches are cleared (the per-player
@@ -327,6 +327,15 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
         var isBlacklisted = plugin.PartyFinderManager.IsBlacklisted(member.Name, member.World);
 
+        // Friends, free company and linkshell members: tinted row and name. Matched by ContentId, so it works
+        // for private (hidden-plate) members too.
+        var known = plugin.KnownPlayerService.GetSources(member.ContentId);
+        Vector4? knownColor = known != KnownPlayerSource.None ? cfg.KnownPlayerHighlightColor : null;
+        if (knownColor is { } tint)
+        {
+            ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, ImGui.ColorConvertFloat4ToU32(tint with { W = 0.18f }));
+        }
+
         // ── Column 0: Job icon + player name + badges ─────────────────────
         ImGui.TableSetColumnIndex(0);
 
@@ -363,18 +372,18 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         var fflogsUrl = !member.IsPrivate && isResolved ? FFLogsService.GetCharacterPageUrl(member.Name, member.World) : null;
 
         ImGui.AlignTextToFramePadding();
-        if (member.IsPrivate)
+        if (fflogsUrl is not null)
         {
-            ImGui.TextColored(OverlayWidgets.Muted, displayName);
-        }
-        else if (fflogsUrl is not null)
-        {
-            OverlayWidgets.LinkText(displayName, fflogsUrl,
+            OverlayWidgets.LinkText(displayName, fflogsUrl, knownColor,
                 drawTooltip: () => DrawNameProvenanceTooltip(member, showClickHint: true));
         }
         else
         {
-            ImGui.TextUnformatted(displayName);
+            ImGui.TextColored(knownColor ?? (member.IsPrivate ? OverlayWidgets.Muted : M3.Scheme.OnSurface), displayName);
+            if (known != KnownPlayerSource.None && ImGui.IsItemHovered())
+            {
+                ImguiTooltips.ShowTooltip(KnownSourcesText(known));
+            }
         }
 
         if (member.IsPrivate)
@@ -408,7 +417,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             {
                 PrivateCell();
             }
-            else if (tomestoneInfoCache.TryGetValue(member.ContentId, out var cachedTs))
+            else if (tomestoneInfoCache.TryGetValue(KeyOf(member), out var cachedTs))
             {
                 OverlayWidgets.TomestoneCell(cachedTs);
             }
@@ -426,7 +435,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             {
                 PrivateCell();
             }
-            else if (fflogsEncounterCache.TryGetValue(member.ContentId, out var cachedFf))
+            else if (fflogsEncounterCache.TryGetValue(KeyOf(member), out var cachedFf))
             {
                 OverlayWidgets.FFLogsCell(cachedFf, member);
             }
@@ -444,7 +453,17 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         ImGui.TextColored(OverlayWidgets.Muted, "-");
     }
 
-    // ── Cache helpers (all caches keyed by member ContentId) ────────────────
+    // ── Cache helpers (all caches keyed by MemberKey) ───────────────────────
+
+    /// <summary>
+    /// A member's identity for the result caches: ContentId plus the name and world the lookup used. When a
+    /// re-verify finds a rename or world transfer, the key changes, so the stale result is no longer shown
+    /// and the player counts as not looked up yet (auto-fetch or the lookup button covers them again).
+    /// </summary>
+    private readonly record struct MemberKey(ulong ContentId, string Name, string World);
+
+    private static MemberKey KeyOf(PartyMemberInfo m) => new(m.ContentId, m.Name, m.World);
+
 
     /// <summary>Members eligible for a lookup: a resolved real name, not private, with a usable ContentId
     /// (the cache key).</summary>
@@ -468,7 +487,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 continue;
             }
 
-            if (!fflogsEncounterCache.TryGetValue(m.ContentId, out var cached))
+            if (!fflogsEncounterCache.TryGetValue(KeyOf(m), out var cached))
             {
                 list.Add(m);
             }
@@ -487,7 +506,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         var list = new List<PartyMemberInfo>();
         foreach (var m in members)
         {
-            if (IsLookupEligible(m) && !tomestoneInfoCache.ContainsKey(m.ContentId))
+            if (IsLookupEligible(m) && !tomestoneInfoCache.ContainsKey(KeyOf(m)))
             {
                 list.Add(m);
             }
@@ -497,7 +516,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     }
 
     /// <summary>
-    /// Fetches FFLogs data for the given members and stores each result in the cache keyed by ContentId, so a
+    /// Fetches FFLogs data for the given members and stores each result in the cache keyed by player identity (MemberKey), so a
     /// later roster change keeps every other player's data and only genuinely-new members are re-queried.
     /// Uses an encounter-specific batch when the duty is mapped, else a general zone-parse fallback. Renders
     /// progressively via the per-member callback.
@@ -530,7 +549,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                     {
                         if (index >= 0 && index < toFetch.Count)
                         {
-                            cache[toFetch[index].ContentId] = result;
+                            cache[KeyOf(toFetch[index])] = result;
                         }
                     });
 
@@ -538,7 +557,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 {
                     if (index >= 0 && index < toFetch.Count)
                     {
-                        cache[toFetch[index].ContentId] = result;
+                        cache[KeyOf(toFetch[index])] = result;
                     }
                 }
             }
@@ -548,7 +567,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 var averages = await plugin.FFLogsService.GetZoneAveragesForAllAsync(memberData);
                 for (var i = 0; i < toFetch.Count; i++)
                 {
-                    cache[toFetch[i].ContentId] =
+                    cache[KeyOf(toFetch[i])] =
                         averages.TryGetValue(i, out var r) ? r : new EncounterParseResult(false, false, 0, null, null);
                 }
             }
@@ -561,9 +580,9 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             // (they now have an entry) while the button — which includes failed members — can still retry.
             foreach (var m in toFetch)
             {
-                if (!cache.ContainsKey(m.ContentId))
+                if (!cache.ContainsKey(KeyOf(m)))
                 {
-                    cache[m.ContentId] = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
+                    cache[KeyOf(m)] = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
                 }
             }
         }
@@ -574,7 +593,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     }
 
     /// <summary>
-    /// Fetches Tomestone info for the given members, storing each result in the cache keyed by ContentId.
+    /// Fetches Tomestone info for the given members, storing each result in the cache keyed by player identity (MemberKey).
     /// Passes the current duty name so the API can return encounter-specific data.
     /// </summary>
     private async Task FetchTomestoneForAsync(List<PartyMemberInfo> toFetch)
@@ -592,13 +611,13 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 {
                     var info = await plugin.TomestoneService.GetCharacterInfoAsync(
                         member.Name, member.World, dutyName);
-                    cache[member.ContentId] = info;
+                    cache[KeyOf(member)] = info;
                 }
                 catch (Exception ex)
                 {
                     PassportCheckerReborn.Log.Warning(ex,
                         $"[OverlayWindow] Tomestone lookup failed for {member.Name}@{member.World}");
-                    cache[member.ContentId] = null;
+                    cache[KeyOf(member)] = null;
                 }
             }
         }
@@ -624,12 +643,22 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
     private void DrawNameProvenanceTooltip(PartyMemberInfo member, bool showClickHint = false)
     {
         var entry = plugin.CidCache.TryGet(member.ContentId, out var e) && e is not null ? e : null;
-        if (entry is null && !showClickHint)
+        var known = plugin.KnownPlayerService.GetSources(member.ContentId);
+        if (entry is null && !showClickHint && known == KnownPlayerSource.None)
         {
             return;
         }
 
         ImGui.BeginTooltip();
+
+        if (known != KnownPlayerSource.None)
+        {
+            ImGui.TextColored(plugin.Configuration.KnownPlayerHighlightColor, KnownSourcesText(known));
+            if (entry is not null || showClickHint)
+            {
+                ImGui.Separator();
+            }
+        }
 
         if (entry is not null)
         {
@@ -670,6 +699,33 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
         }
 
         ImGui.EndTooltip();
+    }
+
+    /// <summary>"Known player: Friend · Free Company", listing where this player is known from.</summary>
+    private static string KnownSourcesText(KnownPlayerSource sources)
+    {
+        var parts = new List<string>(4);
+        if (sources.HasFlag(KnownPlayerSource.Friend))
+        {
+            parts.Add(Loc.T("Friend"));
+        }
+
+        if (sources.HasFlag(KnownPlayerSource.FreeCompany))
+        {
+            parts.Add(Loc.T("Free Company"));
+        }
+
+        if (sources.HasFlag(KnownPlayerSource.Linkshell))
+        {
+            parts.Add(Loc.T("Linkshell"));
+        }
+
+        if (sources.HasFlag(KnownPlayerSource.CrossWorldLinkshell))
+        {
+            parts.Add(Loc.T("Cross-world Linkshell"));
+        }
+
+        return $"{Loc.T("Known player")}: {string.Join(" · ", parts)}";
     }
 
     private static string FormatAge(TimeSpan span)

@@ -49,9 +49,13 @@ public class Configuration : IPluginConfiguration
     public bool PreventAutoClosingOnPartyChanges2 { get; set; } = false;
 
     // ── General ─ Party Finder List Optimizations ────────────────────────────
+    public bool EnableTrueTimeBasedSorting { get; set; } = false;
+    public bool TimeSortNewestFirst { get; set; } = true;
+    public bool ExpandListingsTo100PerPage { get; set; } = false;
     public bool EnableAutomaticRefresh { get; set; } = false;
     public int AutoRefreshIntervalSeconds { get; set; } = 30;
     public bool RightClickPlayerNameForRecruitment3 { get; set; } = false;
+    public bool EnableOneClickJobFilter { get; set; } = false;
 
     // ── Overlay ───────────────────────────────────────────────────────────────
     public bool ShowMemberInfoOverlay { get; set; } = true;
@@ -67,6 +71,13 @@ public class Configuration : IPluginConfiguration
 
     // ── Blacklist ─────────────────────────────────────────────────────────────
     public bool EnableBlacklistFeature { get; set; } = true;
+
+    // ── Known players (highlighted in the member info overlay) ─────────────────
+    public bool HighlightFriends { get; set; } = true;
+    public bool HighlightFreeCompanyMembers { get; set; } = true;
+    public bool HighlightLinkshellMembers { get; set; } = true;
+    public bool HighlightCrossWorldLinkshellMembers { get; set; } = true;
+    public Vector4 KnownPlayerHighlightColor { get; set; } = new(0.35f, 0.78f, 0.55f, 1f);
 
     // ── PlayerTrack Integration ───────────────────────────────────────────────
     /// <summary>

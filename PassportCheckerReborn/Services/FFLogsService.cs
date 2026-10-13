@@ -39,8 +39,12 @@ public sealed class FFLogsService : IDisposable
     private const string TokenUrl = "https://www.fflogs.com/oauth/token";
     private const string ApiUrl = "https://www.fflogs.com/api/v2/client";
 
-    private string? cachedToken;
-    private DateTime tokenExpiry = DateTime.MinValue;
+    // The token is held with the credentials it was issued for, as one immutable reference, so a reader
+    // never sees a token paired with another token's expiry. tokenLock makes concurrent lookups share a fetch.
+    private sealed record CachedToken(string Token, DateTime Expiry, string Credentials);
+
+    private volatile CachedToken? cachedToken;
+    private readonly SemaphoreSlim tokenLock = new(1, 1);
 
     // Cache lifetime for batched duty results and zone averages (see dutyResultCache / zoneAverageCache).
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
@@ -71,7 +75,8 @@ public sealed class FFLogsService : IDisposable
 
     /// <summary>
     /// Attempts to obtain an OAuth token with the supplied credentials.
-    /// Returns <c>true</c> when a token is successfully issued.
+    /// Returns <c>true</c> when a token is successfully issued. The token is not cached: the credentials
+    /// under test may not be the saved ones the lookups use.
     /// </summary>
     public async Task<bool> TestCredentialsAsync(string clientId, string clientSecret)
     {
@@ -88,7 +93,8 @@ public sealed class FFLogsService : IDisposable
     // Token management
     // ─────────────────────────────────────────────────────────────────────────
 
-    private async Task<string?> FetchTokenAsync(string clientId, string clientSecret)
+    /// <summary>Requests a new OAuth token. Returns null on failure; the caller decides whether to cache it.</summary>
+    private async Task<CachedToken?> FetchTokenAsync(string clientId, string clientSecret)
     {
         try
         {
@@ -115,21 +121,19 @@ public sealed class FFLogsService : IDisposable
 
             var json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("access_token", out var tokenEl))
+            if (!doc.RootElement.TryGetProperty("access_token", out var tokenEl) || tokenEl.GetString() is not { } token)
             {
                 return null;
             }
 
-            var token = tokenEl.GetString();
-
-            // Cache the token
-            cachedToken = token;
             var expiresIn = doc.RootElement.TryGetProperty("expires_in", out var expEl)
                 ? expEl.GetInt32() : 3600;
-            tokenExpiry = DateTime.UtcNow.AddSeconds(expiresIn - 60); // 60-second safety margin
 
             PassportCheckerReborn.Log.Information("[FFLogsService] Token obtained successfully.");
-            return token;
+            return new CachedToken(
+                token,
+                DateTime.UtcNow.AddSeconds(expiresIn - 60), // 60-second safety margin
+                CredentialKey(clientId, clientSecret));
         }
         catch (Exception ex)
         {
@@ -138,7 +142,10 @@ public sealed class FFLogsService : IDisposable
         }
     }
 
-    /// <summary>Returns a valid Bearer token, refreshing if necessary.</summary>
+    /// <summary>
+    /// Returns a valid Bearer token for the saved credentials, refreshing if necessary. Concurrent lookups
+    /// share one token request, and a token is never reused once the saved credentials change.
+    /// </summary>
     private async Task<string?> GetTokenAsync()
     {
         var cfg = plugin.Configuration;
@@ -148,12 +155,56 @@ public sealed class FFLogsService : IDisposable
             return null;
         }
 
-        if (cachedToken is not null && DateTime.UtcNow < tokenExpiry)
+        var key = CredentialKey(cfg.FFLogsClientId, cfg.FFLogsClientSecret);
+        if (cachedToken is { } cached && cached.Credentials == key && DateTime.UtcNow < cached.Expiry)
         {
-            return cachedToken;
+            return cached.Token;
         }
 
-        return await FetchTokenAsync(cfg.FFLogsClientId, cfg.FFLogsClientSecret);
+        try
+        {
+            await tokenLock.WaitAsync(lifetimeCts.Token);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // The plugin is unloading.
+            return null;
+        }
+
+        try
+        {
+            // Another lookup may have fetched one while this one waited.
+            if (cachedToken is { } fresh && fresh.Credentials == key && DateTime.UtcNow < fresh.Expiry)
+            {
+                return fresh.Token;
+            }
+
+            var fetched = await FetchTokenAsync(cfg.FFLogsClientId, cfg.FFLogsClientSecret);
+            if (fetched is not null)
+            {
+                cachedToken = fetched;
+            }
+
+            return fetched?.Token;
+        }
+        finally
+        {
+            tokenLock.Release();
+        }
+    }
+
+    /// <summary>Forgets the cached token if it is still <paramref name="rejected"/>, so the next lookup fetches a new one.</summary>
+    private void InvalidateToken(string rejected)
+    {
+        if (cachedToken?.Token == rejected)
+        {
+            cachedToken = null;
+        }
+    }
+
+    private static string CredentialKey(string clientId, string clientSecret)
+    {
+        return $"{clientId}\n{clientSecret}";
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -195,8 +246,7 @@ public sealed class FFLogsService : IDisposable
             {
                 PassportCheckerReborn.Log.Information(
                     "[FFLogsService] GraphQL returned 401 — refreshing token and retrying once.");
-                cachedToken = null;
-                tokenExpiry = DateTime.MinValue;
+                InvalidateToken(token);
                 return await QueryAsync(graphqlQuery, allowTokenRefresh: false);
             }
 
@@ -499,261 +549,6 @@ public sealed class FFLogsService : IDisposable
     }
 
     /// <summary>
-    /// Fetches encounter-specific data for all members in a batch.
-    /// <para>Phase 1: Query encounterRankings for all characters.</para>
-    /// <para>Phase 2: For characters with no kills, query their recent reports.</para>
-    /// <para>Phase 3: Get fight percentages from those reports to find best progression.</para>
-    /// </summary>
-    public async Task<Dictionary<int, EncounterParseResult>> GetEncounterDataForAllAsync(
-        IReadOnlyList<(string Name, string World, string JobAbbreviation)> members, int encounterId,
-        Action<int, EncounterParseResult>? onUpdated = null)
-    {
-        var results = new Dictionary<int, EncounterParseResult>();
-
-        // Phase 1: Build a single GraphQL query for encounterRankings for all members
-        var queryParts = new List<string>();
-        var validIndices = new List<int>();
-        var difficultyParam = GetDifficultyForEncounter(encounterId) is { } diff
-            ? $", difficulty: {diff}"
-            : string.Empty;
-
-        for (var i = 0; i < members.Count; i++)
-        {
-            var (name, world, _) = members[i];
-            var serverInfo = GetFFLogsServer(world);
-            if (serverInfo is null)
-            {
-                results[i] = new EncounterParseResult(false, true, 0, null, null);
-                continue;
-            }
-
-            var (slug, region) = serverInfo.Value;
-            validIndices.Add(i);
-            queryParts.Add(
-                $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ encounterRankings(encounterID: {encounterId}{difficultyParam}) }}");
-        }
-
-        if (queryParts.Count == 0)
-        {
-            return results;
-        }
-
-        var fullQuery = $"{{ characterData {{ {string.Join(" ", queryParts)} }} }}";
-        var json = await QueryAsync(fullQuery);
-
-        if (json is null)
-        {
-            foreach (var i in validIndices)
-            {
-                var failed = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
-                results[i] = failed;
-                onUpdated?.Invoke(i, failed);
-            }
-
-            return results;
-        }
-
-        var noKillIndices = new List<int>();
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("data", out var dataEl) ||
-                !dataEl.TryGetProperty("characterData", out var charDataEl))
-            {
-                PassportCheckerReborn.Log.Warning(
-                    "[FFLogsService] Encounter batch response missing data/characterData.");
-                foreach (var i in validIndices)
-                {
-                    var failed = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
-                    results[i] = failed;
-                    onUpdated?.Invoke(i, failed);
-                }
-
-                return results;
-            }
-
-            var transientErrored = GetTransientlyErroredAliases(doc.RootElement);
-
-            foreach (var i in validIndices)
-            {
-                if (!charDataEl.TryGetProperty($"p{i}", out var charEl) ||
-                    charEl.ValueKind == JsonValueKind.Null)
-                {
-                    // A transient per-alias error → retryable (uncached) fetch-failure, not a real "No logs".
-                    results[i] = transientErrored.Contains(i)
-                        ? new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true }
-                        : new EncounterParseResult(false, true, 0, null, null);
-                    continue;
-                }
-
-                if (!charEl.TryGetProperty("encounterRankings", out var rankingsEl) ||
-                    rankingsEl.ValueKind == JsonValueKind.Null)
-                {
-                    results[i] = new EncounterParseResult(false, true, 0, null, null);
-                    continue;
-                }
-
-                var totalKills = 0;
-                if (rankingsEl.TryGetProperty("totalKills", out var tkEl) &&
-                    tkEl.ValueKind == JsonValueKind.Number)
-                {
-                    totalKills = tkEl.GetInt32();
-                }
-
-                if (totalKills > 0)
-                {
-                    double? bestParse = null;
-                    string? bestParseSpec = null;
-                    double? currentJobBestParse = null;
-
-                    var currentJobSpec = GetSpecForJob(members[i].JobAbbreviation);
-
-                    if (rankingsEl.TryGetProperty("ranks", out var ranksEl) &&
-                        ranksEl.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var rank in ranksEl.EnumerateArray())
-                        {
-                            if (rank.TryGetProperty("rankPercent", out var pctEl) &&
-                                pctEl.ValueKind == JsonValueKind.Number)
-                            {
-                                var pct = pctEl.GetDouble();
-                                var spec = rank.TryGetProperty("spec", out var specEl)
-                                    ? specEl.GetString() : null;
-
-                                // Track overall best parse (any job)
-                                if (!bestParse.HasValue || pct > bestParse.Value)
-                                {
-                                    bestParse = pct;
-                                    bestParseSpec = spec;
-                                }
-
-                                // Track best parse for the player's current job
-                                if (currentJobSpec != null && spec != null &&
-                                    string.Equals(spec, currentJobSpec, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (!currentJobBestParse.HasValue || pct > currentJobBestParse.Value)
-                                    {
-                                        currentJobBestParse = pct;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    results[i] = new EncounterParseResult(true, true, totalKills, bestParse, null)
-                    {
-                        CurrentJobBestParse = currentJobBestParse,
-                        BestParseSpec = bestParseSpec,
-                        BestParseJobAbbreviation = GetJobAbbrevForSpec(bestParseSpec),
-                        BestParseJobIconId = GetJobIconIdForSpec(bestParseSpec),
-                    };
-                }
-                else
-                {
-                    noKillIndices.Add(i);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            PassportCheckerReborn.Log.Warning(ex,
-                "[FFLogsService] Failed to parse encounter rankings batch response.");
-            foreach (var i in validIndices)
-            {
-                if (!results.ContainsKey(i))
-                {
-                    results[i] = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
-                }
-            }
-            return results;
-        }
-
-        // Publish the fast kill/parse results now, so the UI can render them before the slower
-        // progression query (below) resolves for the no-kill members.
-        if (onUpdated is not null)
-        {
-            foreach (var (i, r) in results)
-            {
-                if (r.HasData)
-                {
-                    onUpdated(i, r);
-                }
-            }
-        }
-
-        // Phases 2 & 3: Get progression data for players with no kills
-        if (noKillIndices.Count > 0)
-        {
-            await FetchProgressionDataAsync(members, encounterId, noKillIndices, results, onUpdated);
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Fetches encounter-specific data for multi-part encounters (e.g., P1/P2) for all members.
-    /// </summary>
-    public async Task<Dictionary<int, EncounterParseResult>> GetMultiEncounterDataForAllAsync(
-        IReadOnlyList<(string Name, string World, string JobAbbreviation)> members, int phase1EncounterId, int phase2EncounterId)
-    {
-        var phase1Results = await GetEncounterDataForAllAsync(members, phase1EncounterId);
-        var phase2Results = await GetEncounterDataForAllAsync(members, phase2EncounterId);
-
-        var combined = new Dictionary<int, EncounterParseResult>();
-        for (var i = 0; i < members.Count; i++)
-        {
-            phase1Results.TryGetValue(i, out var phase1);
-            phase2Results.TryGetValue(i, out var phase2);
-
-            var phase1Kills = phase1?.TotalKills ?? 0;
-            var phase2Kills = phase2?.TotalKills ?? 0;
-            var fullClears = Math.Min(phase1Kills, phase2Kills);
-            var hasData = (phase1?.HasData ?? false) || (phase2?.HasData ?? false);
-
-            // Determine best job info from phase results (prefer P2, fall back to P1)
-            var bestPhase = (phase2?.HasData == true && phase2.TotalKills > 0) ? phase2
-                          : (phase1?.HasData == true && phase1.TotalKills > 0) ? phase1
-                          : phase2 ?? phase1;
-
-            // Determine CurrentJobBestParse: take the value from whichever phase has it
-            double? currentJobBestParse;
-            if (phase2?.CurrentJobBestParse.HasValue == true && phase1?.CurrentJobBestParse.HasValue == true)
-            {
-                currentJobBestParse = Math.Max(phase1.CurrentJobBestParse!.Value, phase2.CurrentJobBestParse!.Value);
-            }
-            else
-            {
-                currentJobBestParse = phase2?.CurrentJobBestParse ?? phase1?.CurrentJobBestParse;
-            }
-
-            // BestParse for the combined result – the overall best parse (any job) from
-            // the most relevant phase so DrawBestParseOnDifferentJob can display it.
-            var combinedBestParse = bestPhase?.BestParse;
-
-            combined[i] = new EncounterParseResult(hasData, true, fullClears, combinedBestParse, null)
-            {
-                // Carry a fetch-failure from either phase so the caller retries instead of caching no-data.
-                FetchFailed = (phase1?.FetchFailed ?? false) || (phase2?.FetchFailed ?? false),
-                Phase1BestParse = phase1?.BestParse,
-                Phase2BestParse = phase2?.BestParse,
-                Phase2LowestBossHpPct = phase2?.LowestBossHpPct,
-                Phase1TotalKills = phase1Kills,
-                Phase2TotalKills = phase2Kills,
-                CurrentJobBestParse = currentJobBestParse,
-                BestParseSpec = bestPhase?.BestParseSpec,
-                BestParseJobAbbreviation = bestPhase?.BestParseJobAbbreviation,
-                BestParseJobIconId = bestPhase?.BestParseJobIconId,
-                // Full per-phase results so the overlay can render P1 and P2 each as its own single-phase cell.
-                Phase1Result = phase1,
-                Phase2Result = phase2,
-            };
-        }
-
-        return combined;
-    }
-
-    /// <summary>
     /// Fetches parse/kill data for all members for a whole DUTY (identified by its ContentFinderCondition
     /// RowId, falling back to <paramref name="fallbackDutyName"/>). Transparently handles multi-phase fights
     /// (P1/P2) and Ultimates that FFLogs re-lists per expansion: for a duty with
@@ -791,6 +586,9 @@ public sealed class FFLogsService : IDisposable
 
             if (TryGetCachedResult(members[i], dutyKey, out var cached))
             {
+                // The cache is keyed by player, not job, so the current-job parse is re-derived for the job
+                // the member is on now (no extra request).
+                cached = WithCurrentJob(cached, members[i].JobAbbreviation);
                 results[i] = cached;
                 onMemberUpdated?.Invoke(i, cached);
             }
@@ -825,112 +623,163 @@ public sealed class FFLogsService : IDisposable
         return results;
     }
 
+    /// <summary>A failed lookup: retryable and never cached, shown as "lookup failed".</summary>
+    private static EncounterParseResult FailedResult() => new(false, true, 0, null, null) { FetchFailed = true };
+
+    /// <summary>No data on this encounter (no clear, no progression found).</summary>
+    private static EncounterParseResult NoDataResult() => new(false, true, 0, null, null);
+
     /// <summary>
-    /// Does the real API work for a cache-miss subset of members (indexed 0..n-1): the current-expansion
-    /// listing, any older-expansion (historical) listings folded in, no-kill progression, and a zone-average
-    /// fallback. For Ultimates the current + all historical listings are fetched in a SINGLE batched request.
+    /// Does the real API work for a cache-miss subset of members (indexed 0..n-1), in at most two requests
+    /// whatever the duty:
+    /// <list type="number">
+    /// <item>One rankings request covering every member and every listing of the fight: the fight itself, or
+    /// P1 + P2 for a two-phase fight, plus for Ultimates the same fight's older-expansion listings (folded in).
+    /// Characters FFLogs doesn't know come back as <see cref="EncounterParseResult.CharacterNotFound"/>.</item>
+    /// <item>One progression request for the members without a clear, each reading their recent reports
+    /// once for every phase they haven't cleared.</item>
+    /// </list>
+    /// Clears/parses are published as soon as the rankings arrive; the rest once progression resolves.
     /// </summary>
     private async Task<Dictionary<int, EncounterParseResult>> ComputeDutyDataAsync(
         IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
         DutyEntry entry,
         Action<int, EncounterParseResult>? onUpdated = null)
     {
-        Dictionary<int, EncounterParseResult> results;
+        var results = new Dictionary<int, EncounterParseResult>();
 
-        if (entry.HistoricalEncounterIds is { Length: > 0 } historical)
+        void Publish(int i, EncounterParseResult r)
         {
-            // Ultimates: one request covers the current + every older-expansion listing (all single-phase).
-            var encounterIds = new List<int>(historical.Length + 1) { entry.PrimaryEncounterId };
-            encounterIds.AddRange(historical);
+            results[i] = r;
+            onUpdated?.Invoke(i, r);
+        }
 
-            var raw = await QueryEncounterRankingsBatchAsync(members, encounterIds);
-            results = new Dictionary<int, EncounterParseResult>();
+        int[] phaseIds = entry.SecondaryEncounterId is { } secondary
+            ? [entry.PrimaryEncounterId, secondary]
+            : [entry.PrimaryEncounterId];
+        var historical = entry.HistoricalEncounterIds ?? [];
 
-            if (raw is null)
+        var batch = await QueryEncounterRankingsBatchAsync(members, [.. phaseIds, .. historical]);
+        if (batch is null)
+        {
+            // The request itself failed: everyone with a name is retryable, nothing is cached.
+            for (var i = 0; i < members.Count; i++)
             {
-                // The batched request failed — mark resolvable members as fetch-failed (retryable, uncached).
-                for (var i = 0; i < members.Count; i++)
+                if (!string.IsNullOrEmpty(members[i].Name))
                 {
-                    if (string.IsNullOrEmpty(members[i].Name))
-                    {
-                        continue;
-                    }
-
-                    var failed = new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true };
-                    results[i] = failed;
-                    onUpdated?.Invoke(i, failed);
+                    Publish(i, FailedResult());
                 }
+            }
+
+            return results;
+        }
+
+        // Each member's per-phase results, and the phases still needing progression (no clear).
+        var phaseResults = new Dictionary<int, EncounterParseResult[]>();
+        var needsProgression = new Dictionary<int, List<int>>();
+
+        for (var i = 0; i < members.Count; i++)
+        {
+            if (string.IsNullOrEmpty(members[i].Name))
+            {
+                continue;
+            }
+
+            if (batch.Failed.Contains(i))
+            {
+                Publish(i, FailedResult());
+                continue;
+            }
+
+            if (batch.NotFound.Contains(i))
+            {
+                // Known answer (cached): FFLogs has no such character, so there is no progression to look for.
+                Publish(i, NoDataResult() with { CharacterNotFound = true });
+                continue;
+            }
+
+            if (!batch.Queried.Contains(i))
+            {
+                // The world couldn't be mapped to an FFLogs server.
+                Publish(i, NoDataResult());
+                continue;
+            }
+
+            batch.Data.TryGetValue(i, out var perEncounter);
+            var phases = new EncounterParseResult[phaseIds.Length];
+            for (var p = 0; p < phaseIds.Length; p++)
+            {
+                phases[p] = perEncounter != null && perEncounter.TryGetValue(phaseIds[p], out var d)
+                    ? BuildSinglePhaseResult(d)
+                    : NoDataResult();
+            }
+
+            // Ultimates (single-phase): a clear or parse from any expansion's listing counts.
+            if (perEncounter != null)
+            {
+                foreach (var histId in historical)
+                {
+                    if (perEncounter.TryGetValue(histId, out var hist))
+                    {
+                        phases[0] = MergeHistorical(phases[0], hist);
+                    }
+                }
+            }
+
+            phaseResults[i] = phases;
+
+            // Progression is measured on the live listing of each phase without a clear (in any expansion).
+            var uncleared = new List<int>();
+            for (var p = 0; p < phaseIds.Length; p++)
+            {
+                if (phases[p].TotalKills == 0)
+                {
+                    uncleared.Add(phaseIds[p]);
+                }
+            }
+
+            if (uncleared.Count > 0)
+            {
+                needsProgression[i] = uncleared;
             }
             else
             {
-                for (var i = 0; i < members.Count; i++)
+                Publish(i, CombinePhases(phases));
+            }
+        }
+
+        if (needsProgression.Count > 0)
+        {
+            var (progression, progressionFailed) = await FetchProgressionDataAsync(members, needsProgression);
+            foreach (var (i, encounters) in needsProgression)
+            {
+                var phases = phaseResults[i];
+                if (progressionFailed.Contains(i))
                 {
-                    if (!raw.TryGetValue(i, out var perEncounter))
+                    // Keep what the rankings already showed (e.g. a two-phase fight's P1 clear); the phases
+                    // whose progression couldn't be read show as failed, and the whole result is retried.
+                    for (var p = 0; p < phaseIds.Length; p++)
                     {
-                        continue;
-                    }
-
-                    var current = perEncounter.TryGetValue(entry.PrimaryEncounterId, out var primary)
-                        ? BuildSinglePhaseResult(primary)
-                        : new EncounterParseResult(false, true, 0, null, null);
-
-                    foreach (var histId in historical)
-                    {
-                        if (perEncounter.TryGetValue(histId, out var hist))
+                        if (encounters.Contains(phaseIds[p]))
                         {
-                            current = MergeHistorical(current, hist);
+                            phases[p] = FailedResult();
                         }
                     }
 
-                    results[i] = current;
-
-                    // Publish clears/parses immediately; no-log members wait for the slower progression step.
-                    if (current.HasData)
-                    {
-                        onUpdated?.Invoke(i, current);
-                    }
+                    Publish(i, CombinePhases(phases) with { FetchFailed = true });
+                    continue;
                 }
 
-                // Progression only where there's no clear in ANY expansion, measured against the live listing.
-                var noKill = new List<int>();
-                for (var i = 0; i < members.Count; i++)
+                for (var p = 0; p < phaseIds.Length; p++)
                 {
-                    if (string.IsNullOrEmpty(members[i].Name))
+                    if (encounters.Contains(phaseIds[p]) && progression.TryGetValue((i, phaseIds[p]), out var prog))
                     {
-                        continue;
-                    }
-
-                    if (!results.TryGetValue(i, out var r) || r.TotalKills == 0)
-                    {
-                        noKill.Add(i);
+                        phases[p] = prog;
                     }
                 }
 
-                if (noKill.Count > 0)
-                {
-                    await FetchProgressionDataAsync(members, entry.PrimaryEncounterId, noKill, results, onUpdated);
-                }
+                Publish(i, CombinePhases(phases));
             }
-        }
-        else if (entry.SecondaryEncounterId is { } secondary)
-        {
-            results = await GetMultiEncounterDataForAllAsync(members, entry.PrimaryEncounterId, secondary);
-
-            // Multi-phase isn't split into fast/slow steps here; publish the combined results in one go.
-            if (onUpdated is not null)
-            {
-                foreach (var (i, r) in results)
-                {
-                    if (r.HasData)
-                    {
-                        onUpdated(i, r);
-                    }
-                }
-            }
-        }
-        else
-        {
-            results = await GetEncounterDataForAllAsync(members, entry.PrimaryEncounterId, onUpdated);
         }
 
         // No zone-average fallback for mapped duties on purpose: for a specific encounter we only want that
@@ -940,23 +789,70 @@ public sealed class FFLogsService : IDisposable
     }
 
     /// <summary>
-    /// One-request batch of encounterRankings for every (member × encounter) pair via GraphQL aliases, so a
-    /// single HTTP round-trip covers all members and all encounter IDs. Returns memberIndex → (encounterId →
-    /// parsed rank data); missing entries mean no data. Returns <c>null</c> when the request itself failed
-    /// (so callers can distinguish a failure from "everyone has no data"). Progression is NOT fetched here.
+    /// A single fight's result as is, or a two-phase fight's P1 and P2 results combined: full clears are the
+    /// smaller kill count, parse and best-parse job come from the most relevant phase (P2, else P1), and each
+    /// phase's own result is kept so the overlay can show both.
     /// </summary>
-    private async Task<Dictionary<int, Dictionary<int, EncounterRankData>>?> QueryEncounterRankingsBatchAsync(
+    private static EncounterParseResult CombinePhases(EncounterParseResult[] phases)
+    {
+        if (phases.Length == 1)
+        {
+            return phases[0];
+        }
+
+        var phase1 = phases[0];
+        var phase2 = phases[1];
+        var bestPhase = phase2.HasData && phase2.TotalKills > 0 ? phase2
+                      : phase1.HasData && phase1.TotalKills > 0 ? phase1
+                      : phase2;
+
+        return new EncounterParseResult(phase1.HasData || phase2.HasData, true,
+            Math.Min(phase1.TotalKills, phase2.TotalKills), bestPhase.BestParse, null)
+        {
+            Phase1BestParse = phase1.BestParse,
+            Phase2BestParse = phase2.BestParse,
+            Phase2LowestBossHpPct = phase2.LowestBossHpPct,
+            Phase1TotalKills = phase1.TotalKills,
+            Phase2TotalKills = phase2.TotalKills,
+            CurrentJobBestParse = MaxNullable(phase1.CurrentJobBestParse, phase2.CurrentJobBestParse),
+            BestParseBySpec = MergeSpecBests(phase1.BestParseBySpec, phase2.BestParseBySpec),
+            BestParseSpec = bestPhase.BestParseSpec,
+            BestParseJobAbbreviation = bestPhase.BestParseJobAbbreviation,
+            BestParseJobIconId = bestPhase.BestParseJobIconId,
+            // Full per-phase results so the overlay can render P1 and P2 each as its own single-phase cell.
+            Phase1Result = phase1,
+            Phase2Result = phase2,
+        };
+    }
+
+    /// <summary>
+    /// What one rankings batch returned: memberIndex → (encounterId → rank data), which members were actually
+    /// queried (their world maps to an FFLogs server), which ones FFLogs has no character for, and which ones
+    /// hit a transient per-member error (retryable).
+    /// </summary>
+    private sealed record RankingsBatch(
+        Dictionary<int, Dictionary<int, EncounterRankData>> Data,
+        HashSet<int> Queried,
+        HashSet<int> NotFound,
+        HashSet<int> Failed);
+
+    /// <summary>
+    /// One-request batch of encounterRankings for every (member × encounter) pair via GraphQL aliases, so a
+    /// single HTTP round-trip covers all members and all encounter IDs. Returns <c>null</c> when the request
+    /// itself failed (so callers can distinguish a failure from "everyone has no data"). Progression is NOT
+    /// fetched here.
+    /// </summary>
+    private async Task<RankingsBatch?> QueryEncounterRankingsBatchAsync(
         IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
         IReadOnlyList<int> encounterIds)
     {
-        var result = new Dictionary<int, Dictionary<int, EncounterRankData>>();
+        var batch = new RankingsBatch([], [], [], []);
         if (encounterIds.Count == 0)
         {
-            return result;
+            return batch;
         }
 
         var memberParts = new List<string>();
-        var validIndices = new List<int>();
         for (var i = 0; i < members.Count; i++)
         {
             var (name, world, _) = members[i];
@@ -979,14 +875,14 @@ public sealed class FFLogsService : IDisposable
                 encounterParts.Add($"e{encId}: encounterRankings(encounterID: {encId}{difficultyParam})");
             }
 
-            validIndices.Add(i);
+            batch.Queried.Add(i);
             memberParts.Add(
                 $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ {string.Join(" ", encounterParts)} }}");
         }
 
         if (memberParts.Count == 0)
         {
-            return result;
+            return batch;
         }
 
         var fullQuery = $"{{ characterData {{ {string.Join(" ", memberParts)} }} }}";
@@ -1005,10 +901,26 @@ public sealed class FFLogsService : IDisposable
                 return null;
             }
 
-            foreach (var i in validIndices)
+            var transientErrored = GetTransientlyErroredAliases(doc.RootElement);
+            var anyErrored = GetErroredAliases(doc.RootElement);
+
+            foreach (var i in batch.Queried)
             {
+                if (transientErrored.Contains(i))
+                {
+                    batch.Failed.Add(i);
+                    continue;
+                }
+
                 if (!charDataEl.TryGetProperty($"p{i}", out var charEl) || charEl.ValueKind == JsonValueKind.Null)
                 {
+                    // FFLogs answers a name/server it has no character for with a plain null and no error entry.
+                    // A null that comes with an error is something else: treat it as plain "no data".
+                    if (!anyErrored.Contains(i))
+                    {
+                        batch.NotFound.Add(i);
+                    }
+
                     continue;
                 }
 
@@ -1024,16 +936,25 @@ public sealed class FFLogsService : IDisposable
 
                 if (perEncounter.Count > 0)
                 {
-                    result[i] = perEncounter;
+                    batch.Data[i] = perEncounter;
                 }
             }
         }
         catch (Exception ex)
         {
             PassportCheckerReborn.Log.Warning(ex, "[FFLogsService] Failed to parse batched encounter rankings.");
+
+            // Whoever wasn't read yet can't be told apart from "no data": retry them.
+            foreach (var i in batch.Queried)
+            {
+                if (!batch.Data.ContainsKey(i) && !batch.NotFound.Contains(i))
+                {
+                    batch.Failed.Add(i);
+                }
+            }
         }
 
-        return result;
+        return batch;
     }
 
     /// <summary>Extracts kills + best/current-job parse from one encounterRankings JSON blob.</summary>
@@ -1048,6 +969,7 @@ public sealed class FFLogsService : IDisposable
         double? bestParse = null;
         string? bestParseSpec = null;
         double? currentJobBestParse = null;
+        var bestBySpec = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         if (rankingsEl.TryGetProperty("ranks", out var ranksEl) && ranksEl.ValueKind == JsonValueKind.Array)
         {
             foreach (var rank in ranksEl.EnumerateArray())
@@ -1059,6 +981,7 @@ public sealed class FFLogsService : IDisposable
 
                 var pct = pctEl.GetDouble();
                 var spec = rank.TryGetProperty("spec", out var specEl) ? specEl.GetString() : null;
+                RecordSpecBest(bestBySpec, spec, pct);
 
                 if (!bestParse.HasValue || pct > bestParse.Value)
                 {
@@ -1075,7 +998,52 @@ public sealed class FFLogsService : IDisposable
             }
         }
 
-        return new EncounterRankData(totalKills, bestParse, bestParseSpec, currentJobBestParse);
+        return new EncounterRankData(totalKills, bestParse, bestParseSpec, currentJobBestParse, bestBySpec);
+    }
+
+    /// <summary>Keeps the highest parse seen per FFLogs spec.</summary>
+    private static void RecordSpecBest(Dictionary<string, double> bestBySpec, string? spec, double pct)
+    {
+        if (spec != null && (!bestBySpec.TryGetValue(spec, out var prev) || pct > prev))
+        {
+            bestBySpec[spec] = pct;
+        }
+    }
+
+    /// <summary>Per-spec bests of two results combined, keeping the higher parse for each spec.</summary>
+    private static IReadOnlyDictionary<string, double>? MergeSpecBests(
+        IReadOnlyDictionary<string, double>? a, IReadOnlyDictionary<string, double>? b)
+    {
+        if (a is null || b is null)
+        {
+            return a ?? b;
+        }
+
+        var merged = new Dictionary<string, double>(a, StringComparer.OrdinalIgnoreCase);
+        foreach (var (spec, pct) in b)
+        {
+            RecordSpecBest(merged, spec, pct);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// <paramref name="result"/> with its current-job parse taken for <paramref name="jobAbbreviation"/>, from
+    /// the per-spec bests it carries. Results without per-spec data are returned unchanged.
+    /// </summary>
+    private static EncounterParseResult WithCurrentJob(EncounterParseResult result, string jobAbbreviation)
+    {
+        if (result.BestParseBySpec is not { } bySpec)
+        {
+            return result;
+        }
+
+        var spec = GetSpecForJob(jobAbbreviation);
+        return result with
+        {
+            CurrentJobBestParse = spec != null && bySpec.TryGetValue(spec, out var pct) ? pct : null,
+        };
     }
 
     /// <summary>Builds a single-phase <see cref="EncounterParseResult"/> from one encounter's raw rank data.</summary>
@@ -1083,6 +1051,7 @@ public sealed class FFLogsService : IDisposable
         => new(d.TotalKills > 0, true, d.TotalKills, d.BestParse, null)
         {
             CurrentJobBestParse = d.CurrentJobBestParse,
+            BestParseBySpec = d.BestParseBySpec,
             BestParseSpec = d.BestParseSpec,
             BestParseJobAbbreviation = GetJobAbbrevForSpec(d.BestParseSpec),
             BestParseJobIconId = GetJobIconIdForSpec(d.BestParseSpec),
@@ -1103,6 +1072,7 @@ public sealed class FFLogsService : IDisposable
             TotalKills = combinedKills,
             BestParse = MaxNullable(current.BestParse, hist.BestParse),
             CurrentJobBestParse = MaxNullable(current.CurrentJobBestParse, hist.CurrentJobBestParse),
+            BestParseBySpec = MergeSpecBests(current.BestParseBySpec, hist.BestParseBySpec),
             BestParseSpec = histParseWins ? hist.BestParseSpec : current.BestParseSpec,
             BestParseJobAbbreviation = histParseWins ? GetJobAbbrevForSpec(hist.BestParseSpec) : current.BestParseJobAbbreviation,
             BestParseJobIconId = histParseWins ? GetJobIconIdForSpec(hist.BestParseSpec) : current.BestParseJobIconId,
@@ -1125,7 +1095,7 @@ public sealed class FFLogsService : IDisposable
             indices.Add(i);
         }
 
-        var averages = await QueryZoneAveragesAsync(members, indices);
+        var (averages, failed) = await QueryZoneAveragesAsync(members, indices);
         var results = new Dictionary<int, EncounterParseResult>();
         foreach (var (i, avg) in averages)
         {
@@ -1134,15 +1104,22 @@ public sealed class FFLogsService : IDisposable
                 : new EncounterParseResult(false, false, 0, null, null);
         }
 
+        // A failed request is not "no data": mark it so the cell reads "lookup failed" and a retry covers it.
+        foreach (var i in failed)
+        {
+            results[i] = new EncounterParseResult(false, false, 0, null, null) { FetchFailed = true };
+        }
+
         return results;
     }
 
     /// <summary>
     /// Batched <c>zoneRankings</c> lookup for the given member indices in a single request, returning
-    /// memberIndex → best (or median) performance average. Results are cached per character for
+    /// memberIndex → best (or median) performance average, plus the members whose lookup failed (request or
+    /// response error), which are left out of the averages. Results are cached per character for
     /// <see cref="CacheTtl"/>, so cached members are served without hitting the API.
     /// </summary>
-    private async Task<Dictionary<int, double?>> QueryZoneAveragesAsync(
+    private async Task<(Dictionary<int, double?> Averages, List<int> Failed)> QueryZoneAveragesAsync(
         IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
         IReadOnlyList<int> indices)
     {
@@ -1179,14 +1156,14 @@ public sealed class FFLogsService : IDisposable
 
         if (parts.Count == 0)
         {
-            return result;
+            return (result, []);
         }
 
         var query = $"{{ characterData {{ {string.Join(" ", parts)} }} }}";
         var json = await QueryAsync(query);
         if (json is null)
         {
-            return result;
+            return (result, valid);
         }
 
         try
@@ -1195,7 +1172,7 @@ public sealed class FFLogsService : IDisposable
             if (!doc.RootElement.TryGetProperty("data", out var dataEl) ||
                 !dataEl.TryGetProperty("characterData", out var charDataEl))
             {
-                return result;
+                return (result, valid);
             }
 
             foreach (var i in valid)
@@ -1224,7 +1201,7 @@ public sealed class FFLogsService : IDisposable
         }
 
         PruneExpiredCachesIfLarge();
-        return result;
+        return (result, valid.FindAll(i => !result.ContainsKey(i)));
     }
 
     // ── Batch-path caching (keyed per character) ────────────────────────────
@@ -1287,53 +1264,32 @@ public sealed class FFLogsService : IDisposable
 
     /// <summary>Kills + parse extracted from a single encounterRankings blob (one member, one encounter).</summary>
     private readonly record struct EncounterRankData(
-        int TotalKills, double? BestParse, string? BestParseSpec, double? CurrentJobBestParse);
+        int TotalKills, double? BestParse, string? BestParseSpec, double? CurrentJobBestParse,
+        IReadOnlyDictionary<string, double>? BestParseBySpec);
 
     // How many recent reports per player to scan for progression pulls. Larger = catches older prog at
     // the cost of more API points. FFLogs has no "furthest pull ever" field, so this is the practical window.
     private const int ProgressionReportLimit = 10;
 
     /// <summary>
-    /// Fetches progression data for no-kill players in ONE nested request: for each player, pulls the wipes
-    /// on this encounter straight from their recent reports (<c>recentReports.data.fights</c>) — no separate
-    /// report-code round-trip. The best pull is the wipe with the lowest <c>fightPercentage</c> (phase-aware,
-    /// lower = closer to a kill); its <c>bossPercentage</c> and <c>lastPhase</c> drive a "P4 · 3%" display.
+    /// Fetches progression for no-clear members in ONE nested request: each member's recent reports are read
+    /// once, with one aliased <c>fights</c> list per encounter they haven't cleared (both phases of a two-phase
+    /// fight in the same read). The best pull per encounter is the wipe with the lowest <c>fightPercentage</c>
+    /// (phase-aware, lower = closer to a kill); its <c>bossPercentage</c> and <c>lastPhase</c> drive a
+    /// "P4 · 3%" display. Returns (member, encounter) → result for every requested pair it could answer, and
+    /// the members whose progression couldn't be read (request failure or transient error; retryable).
     /// </summary>
-    private async Task FetchProgressionDataAsync(
-        IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
-        int encounterId,
-        List<int> noKillIndices,
-        Dictionary<int, EncounterParseResult> results,
-        Action<int, EncounterParseResult>? onUpdated = null)
+    private async Task<(Dictionary<(int Member, int Encounter), EncounterParseResult> Results, HashSet<int> Failed)>
+        FetchProgressionDataAsync(
+            IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
+            IReadOnlyDictionary<int, List<int>> encountersByMember)
     {
-        // Emits each no-kill member's final result (prog or no-logs) once the progression query resolves.
-        void PublishNoKill()
-        {
-            if (onUpdated is null)
-            {
-                return;
-            }
-
-            foreach (var i in noKillIndices)
-            {
-                if (results.TryGetValue(i, out var r))
-                {
-                    onUpdated(i, r);
-                }
-            }
-        }
-
+        var results = new Dictionary<(int Member, int Encounter), EncounterParseResult>();
+        var failed = new HashSet<int>();
         var queryParts = new List<string>();
-        var validIndices = new List<int>();
+        var queried = new List<int>();
 
-        // Savage raids share ONE encounter ID across Normal + Savage difficulties, so filter to Savage (101)
-        // to keep a first-timer's Normal (Story-mode) pulls of that boss out. Single-difficulty content
-        // (Ultimate / Extreme / Unreal / Chaotic) has no such overlap, so it needs no filter.
-        var difficultyParam = GetDifficultyForEncounter(encounterId) == DifficultyHigh
-            ? $", difficulty: {DifficultyHigh}"
-            : string.Empty;
-
-        foreach (var i in noKillIndices)
+        foreach (var (i, encounters) in encountersByMember)
         {
             var (name, world, _) = members[i];
             var serverInfo = GetFFLogsServer(world);
@@ -1342,148 +1298,188 @@ public sealed class FFLogsService : IDisposable
                 continue;
             }
 
+            // Savage raids share ONE encounter ID across Normal + Savage difficulties, so filter to Savage (101)
+            // to keep a first-timer's Normal (Story-mode) pulls of that boss out. Single-difficulty content
+            // (Ultimate / Extreme / Unreal / Chaotic) has no such overlap, so it needs no filter.
+            var fightParts = new List<string>(encounters.Count);
+            foreach (var encId in encounters)
+            {
+                var difficultyParam = GetDifficultyForEncounter(encId) == DifficultyHigh
+                    ? $", difficulty: {DifficultyHigh}"
+                    : string.Empty;
+                fightParts.Add($"f{encId}: fights(encounterID: {encId}{difficultyParam}) {{ kill fightPercentage bossPercentage lastPhase friendlyPlayers }}");
+            }
+
             var (slug, region) = serverInfo.Value;
-            validIndices.Add(i);
+            queried.Add(i);
+
             // masterData.actors + fights.friendlyPlayers let us keep ONLY the fights this character actually
             // took part in. recentReports.fights otherwise returns EVERY fight of the encounter in each
             // report, including other players' pulls in large shared/community logs — which would surface a
             // stranger's wipes as this player's progression.
             queryParts.Add(
-                $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ recentReports(limit: {ProgressionReportLimit}) {{ data {{ masterData {{ actors(type: ""Player"") {{ id name }} }} fights(encounterID: {encounterId}{difficultyParam}) {{ kill fightPercentage bossPercentage lastPhase friendlyPlayers }} }} }} }}");
+                $@"p{i}: character(name: ""{EscapeGraphQL(name)}"", serverSlug: ""{EscapeGraphQL(slug)}"", serverRegion: ""{EscapeGraphQL(region)}"") {{ recentReports(limit: {ProgressionReportLimit}) {{ data {{ masterData {{ actors(type: ""Player"") {{ id name }} }} {string.Join(" ", fightParts)} }} }} }}");
         }
 
         if (queryParts.Count == 0)
         {
-            foreach (var i in noKillIndices)
-            {
-                results.TryAdd(i, new EncounterParseResult(false, true, 0, null, null));
-            }
-
-            PublishNoKill();
-            return;
+            return (results, failed);
         }
 
         var query = $"{{ characterData {{ {string.Join(" ", queryParts)} }} }}";
         var json = await QueryAsync(query);
-
         if (json is null)
         {
-            PassportCheckerReborn.Log.Warning(
-                "[FFLogsService] Progression query failed; marking no-kill players as no logs.");
-            foreach (var i in noKillIndices)
-            {
-                results.TryAdd(i, new EncounterParseResult(false, true, 0, null, null));
-            }
-
-            PublishNoKill();
-            return;
+            // Couldn't tell: retry rather than cache a wrong "No logs".
+            PassportCheckerReborn.Log.Warning("[FFLogsService] Progression query failed; members will be retried.");
+            failed.UnionWith(queried);
+            return (results, failed);
         }
 
-        var transientErrored = new HashSet<int>();
-
+        var answered = new HashSet<int>();
         try
         {
             using var doc = JsonDocument.Parse(json);
-            transientErrored = GetTransientlyErroredAliases(doc.RootElement);
+            failed.UnionWith(GetTransientlyErroredAliases(doc.RootElement));
+
             if (doc.RootElement.TryGetProperty("data", out var dataEl) &&
                 dataEl.TryGetProperty("characterData", out var charDataEl))
             {
-                foreach (var i in validIndices)
+                foreach (var i in queried)
                 {
-                    if (!charDataEl.TryGetProperty($"p{i}", out var charEl) ||
-                        charEl.ValueKind == JsonValueKind.Null ||
-                        !charEl.TryGetProperty("recentReports", out var reportsEl) ||
-                        !reportsEl.TryGetProperty("data", out var reportArr) ||
-                        reportArr.ValueKind != JsonValueKind.Array)
+                    if (failed.Contains(i))
                     {
                         continue;
                     }
 
-                    // Best pull across recent reports = the lowest-fightPercentage wipe THIS player was in.
-                    double? bestFightPct = null;
-                    double? bestBossPct = null;
-                    int? bestPhase = null;
-                    var memberName = members[i].Name;
-
-                    foreach (var report in reportArr.EnumerateArray())
+                    // Each member on its own: an unexpected shape for one (left unanswered, so retried) mustn't
+                    // cost the others their results.
+                    try
                     {
-                        // Actor ids for this character in this report (matched by name). recentReports is
-                        // scoped to this character, so they are present; used to drop other players' fights.
-                        var myActorIds = CollectActorIds(report, memberName);
-
-                        if (!report.TryGetProperty("fights", out var fightsEl) ||
-                            fightsEl.ValueKind != JsonValueKind.Array)
+                        if (charDataEl.TryGetProperty($"p{i}", out var charEl) &&
+                            charEl.ValueKind == JsonValueKind.Object &&
+                            charEl.TryGetProperty("recentReports", out var reportsEl) &&
+                            reportsEl.ValueKind == JsonValueKind.Object &&
+                            reportsEl.TryGetProperty("data", out var reportArr) &&
+                            reportArr.ValueKind == JsonValueKind.Array)
                         {
-                            continue;
+                            var memberName = members[i].Name;
+                            foreach (var encId in encountersByMember[i])
+                            {
+                                if (BestProgressionPull(reportArr, memberName, $"f{encId}") is { } best)
+                                {
+                                    results[(i, encId)] = best;
+                                }
+                            }
                         }
 
-                        foreach (var fight in fightsEl.EnumerateArray())
-                        {
-                            // Skip kills – we only want wipe data for progression.
-                            if (fight.TryGetProperty("kill", out var killEl) &&
-                                killEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
-                                killEl.GetBoolean())
-                            {
-                                continue;
-                            }
-
-                            // Only count pulls this character actually participated in (see query comment).
-                            if (!FightIncludesActor(fight, myActorIds))
-                            {
-                                continue;
-                            }
-
-                            if (!fight.TryGetProperty("fightPercentage", out var fpEl) ||
-                                fpEl.ValueKind != JsonValueKind.Number)
-                            {
-                                continue;
-                            }
-
-                            var fp = fpEl.GetDouble();
-                            if (bestFightPct.HasValue && fp >= bestFightPct.Value)
-                            {
-                                continue;
-                            }
-
-                            bestFightPct = fp;
-                            bestBossPct = fight.TryGetProperty("bossPercentage", out var bpEl) && bpEl.ValueKind == JsonValueKind.Number
-                                ? bpEl.GetDouble()
-                                : null;
-                            bestPhase = fight.TryGetProperty("lastPhase", out var lpEl) && lpEl.ValueKind == JsonValueKind.Number
-                                ? lpEl.GetInt32()
-                                : null;
-                        }
+                        answered.Add(i);
                     }
-
-                    if (bestFightPct.HasValue)
+                    catch (Exception ex)
                     {
-                        // Display value: boss HP % in the last phase reached, falling back to the fight %.
-                        var displayPct = bestBossPct ?? bestFightPct.Value;
-                        results[i] = new EncounterParseResult(true, true, 0, null, displayPct)
-                        {
-                            ProgLastPhase = bestPhase,
-                        };
+                        PassportCheckerReborn.Log.Warning(ex, $"[FFLogsService] Failed to parse progression for member {i}.");
                     }
                 }
             }
         }
         catch (Exception ex)
         {
-            PassportCheckerReborn.Log.Warning(ex,
-                "[FFLogsService] Failed to parse progression response.");
+            PassportCheckerReborn.Log.Warning(ex, "[FFLogsService] Failed to parse progression response.");
         }
 
-        // Any no-kill player still without a result (no recent reports / no wipes on this encounter) → no logs,
-        // except where a transient per-alias error means we couldn't actually tell — mark those retryable so
-        // the next refresh re-queries instead of caching a wrong "No logs".
-        foreach (var i in noKillIndices)
+        // A member we never got to read (bad response, parse failure) is retryable; one we read but found no
+        // wipes for simply has no progression on that encounter.
+        foreach (var i in queried)
         {
-            results.TryAdd(i, transientErrored.Contains(i)
-                ? new EncounterParseResult(false, true, 0, null, null) { FetchFailed = true }
-                : new EncounterParseResult(false, true, 0, null, null));
+            if (!answered.Contains(i))
+            {
+                failed.Add(i);
+                continue;
+            }
+
+            foreach (var encId in encountersByMember[i])
+            {
+                results.TryAdd((i, encId), NoDataResult());
+            }
         }
 
-        PublishNoKill();
+        return (results, failed);
+    }
+
+    /// <summary>
+    /// The best no-kill pull on one encounter across a character's recent reports: the lowest-fightPercentage
+    /// wipe this character took part in, read from each report's aliased <paramref name="fightsAlias"/> list.
+    /// Null when there is none.
+    /// </summary>
+    private static EncounterParseResult? BestProgressionPull(JsonElement reports, string memberName, string fightsAlias)
+    {
+        double? bestFightPct = null;
+        double? bestBossPct = null;
+        int? bestPhase = null;
+
+        foreach (var report in reports.EnumerateArray())
+        {
+            if (report.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            // Actor ids for this character in this report (matched by name). recentReports is scoped to this
+            // character, so they are present; used to drop other players' fights.
+            var myActorIds = CollectActorIds(report, memberName);
+
+            if (!report.TryGetProperty(fightsAlias, out var fightsEl) || fightsEl.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var fight in fightsEl.EnumerateArray())
+            {
+                // Skip kills – we only want wipe data for progression.
+                if (fight.TryGetProperty("kill", out var killEl) &&
+                    killEl.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                    killEl.GetBoolean())
+                {
+                    continue;
+                }
+
+                // Only count pulls this character actually participated in (see the query comment).
+                if (!FightIncludesActor(fight, myActorIds))
+                {
+                    continue;
+                }
+
+                if (!fight.TryGetProperty("fightPercentage", out var fpEl) || fpEl.ValueKind != JsonValueKind.Number)
+                {
+                    continue;
+                }
+
+                var fp = fpEl.GetDouble();
+                if (bestFightPct.HasValue && fp >= bestFightPct.Value)
+                {
+                    continue;
+                }
+
+                bestFightPct = fp;
+                bestBossPct = fight.TryGetProperty("bossPercentage", out var bpEl) && bpEl.ValueKind == JsonValueKind.Number
+                    ? bpEl.GetDouble()
+                    : null;
+                bestPhase = fight.TryGetProperty("lastPhase", out var lpEl) && lpEl.ValueKind == JsonValueKind.Number
+                    ? lpEl.GetInt32()
+                    : null;
+            }
+        }
+
+        if (!bestFightPct.HasValue)
+        {
+            return null;
+        }
+
+        // Display value: boss HP % in the last phase reached, falling back to the fight %.
+        return new EncounterParseResult(true, true, 0, null, bestBossPct ?? bestFightPct.Value)
+        {
+            ProgLastPhase = bestPhase,
+        };
     }
 
     /// <summary>
@@ -1495,6 +1491,7 @@ public sealed class FFLogsService : IDisposable
     {
         var ids = new HashSet<int>();
         if (report.TryGetProperty("masterData", out var md)
+            && md.ValueKind == JsonValueKind.Object
             && md.TryGetProperty("actors", out var actors)
             && actors.ValueKind == JsonValueKind.Array)
         {
@@ -1767,6 +1764,38 @@ public sealed class FFLogsService : IDisposable
     /// with no error (or a plain not-found error) stays a genuine "no data" and is cached as before,
     /// preserving the point-saving behaviour for the common not-found case.
     /// </summary>
+    /// <summary>Member indices (<c>p{i}</c> aliases) named in the path of ANY GraphQL error, transient or not.</summary>
+    private static HashSet<int> GetErroredAliases(JsonElement root)
+    {
+        var set = new HashSet<int>();
+        if (!root.TryGetProperty("errors", out var errorsEl) || errorsEl.ValueKind != JsonValueKind.Array)
+        {
+            return set;
+        }
+
+        foreach (var err in errorsEl.EnumerateArray())
+        {
+            if (err.ValueKind != JsonValueKind.Object
+                || !err.TryGetProperty("path", out var pathEl)
+                || pathEl.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var seg in pathEl.EnumerateArray())
+            {
+                if (seg.ValueKind == JsonValueKind.String
+                    && seg.GetString() is { Length: > 1 } s && s[0] == 'p'
+                    && int.TryParse(s.AsSpan(1), out var idx))
+                {
+                    set.Add(idx);
+                }
+            }
+        }
+
+        return set;
+    }
+
     private static HashSet<int> GetTransientlyErroredAliases(JsonElement root)
     {
         var set = new HashSet<int>();
@@ -1868,6 +1897,12 @@ public record EncounterParseResult(
     public bool FetchFailed { get; init; }
 
     /// <summary>
+    /// True when FFLogs has no character with this name on this server (never uploaded, or renamed /
+    /// transferred since). Unlike <see cref="FetchFailed"/> this is a real answer, so it is cached.
+    /// </summary>
+    public bool CharacterNotFound { get; init; }
+
+    /// <summary>
     /// For a no-kill player, the phase (lastPhase) reached on their best progression pull, so the UI can
     /// show e.g. "P4 · 3%". Null for single-phase fights or when phase data is unavailable.
     /// </summary>
@@ -1875,6 +1910,12 @@ public record EncounterParseResult(
 
     /// <summary>Best parse on the player's current job for this encounter.</summary>
     public double? CurrentJobBestParse { get; init; }
+
+    /// <summary>
+    /// Best parse per FFLogs spec. Cached results are keyed by player rather than job, so this lets the
+    /// current-job parse be re-derived when the same player is seen on another job, without a new request.
+    /// </summary>
+    public IReadOnlyDictionary<string, double>? BestParseBySpec { get; init; }
 
     /// <summary>FFLogs spec name for the overall best parse (any job).</summary>
     public string? BestParseSpec { get; init; }

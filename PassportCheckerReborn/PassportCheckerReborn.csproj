@@ -21,10 +21,6 @@
 	<NoWarn>1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="ECommons" Version="3.2.1.20" />
-  </ItemGroup>
-
-  <ItemGroup>
 	<PackageReference Update="DalamudPackager" Version="15.0.0" />
 	<PackageReference Update="DotNet.ReproducibleBuilds" Version="2.0.5" />
   </ItemGroup>
@@ -40,18 +36,12 @@
   <ItemGroup>
 	<Using Include="Dalamud.Interface" />
 	<Using Include="Dalamud.Bindings.ImGui" />
-	<Using Include="Newtonsoft.Json" />
   </ItemGroup>
 
-    <!-- Prune unwanted DLLs from output -->
+    <!-- Keep referenced DLLs out of the output: Dalamud provides everything else the plugin uses. -->
     <Target Name="PruneOutputDlls" AfterTargets="ResolveReferences">
         <ItemGroup>
-            <!-- Keep only these DLLs in the copy-local list -->
-            <_KeepDlls Include="@(ReferenceCopyLocalPaths)" Condition="&#xD;&#xA;	'%(Filename)' == 'PassportCheckerReborn' or&#xD;&#xA;	'%(Filename)' == 'ECommons'&#xD;&#xA;" />
-            <!-- Remove everything else -->
-            <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="!('%(Filename)' == 'PassportCheckerReborn' or '%(Filename)' == 'ECommons')" />
-            <!-- Re-add only the kept set -->
-            <ReferenceCopyLocalPaths Include="@(_KeepDlls)" />
+            <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)' != 'PassportCheckerReborn'" />
         </ItemGroup>
     </Target>
 

@@ -243,6 +243,10 @@ internal static class OverlayWidgets
             {
                 LookupFailed();
             }
+            else if (result?.CharacterNotFound == true)
+            {
+                NotOnFFLogs();
+            }
             else
             {
                 MutedText(Loc.T("No logs"));
@@ -314,6 +318,12 @@ internal static class OverlayWidgets
     {
         MutedText(label);
         ImGui.SameLine();
+
+        if (phase is { FetchFailed: true, HasData: false })
+        {
+            LookupFailed();
+            return;
+        }
 
         if (phase is null || !phase.HasData)
         {
@@ -389,6 +399,16 @@ internal static class OverlayWidgets
         var wipe = string.Format(Loc.T("{0}% wipe"), result.LowestBossHpPct.Value.ToString("F1"));
         var text = result.ProgLastPhase is int ph && ph >= 2 ? $"P{ph} {wipe}" : wipe;
         ImGui.TextColored(M3.Scheme.Warning, text);
+    }
+
+    /// <summary>A muted "Not on FFLogs" marker, distinct from "No logs", explaining what it can mean.</summary>
+    private static void NotOnFFLogs()
+    {
+        MutedText(Loc.T("Not on FFLogs"));
+        if (ImGui.IsItemHovered())
+        {
+            ImguiTooltips.ShowTooltip(Loc.T("FFLogs has no character with this name on this server. They may never have uploaded a log, or renamed or changed servers recently."));
+        }
     }
 
     /// <summary>A "Lookup failed" marker (distinct from muted "No logs") with a retry hint tooltip.</summary>

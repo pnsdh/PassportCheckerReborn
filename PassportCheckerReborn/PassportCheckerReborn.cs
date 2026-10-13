@@ -56,6 +56,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     private MainWindow MainWindow { get; set; } = null!;
     internal PFWindow PFWindow { get; set; } = null!;
     internal PartyListWindow PartyListWindow { get; set; } = null!;
+    internal PFListFilterWindow PFListFilterWindow { get; set; } = null!;
 
     internal TomestoneService TomestoneService { get; private set; } = null!;
     internal FFLogsService FFLogsService { get; private set; } = null!;
@@ -63,6 +64,8 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     internal BlacklistCache BlacklistCache { get; private set; } = null!;
     internal PlayerTrackService PlayerTrackService { get; private set; } = null!;
     internal PartyFinderManager PartyFinderManager { get; private set; } = null!;
+    internal PartyFinderListTweaks PartyFinderListTweaks { get; private set; } = null!;
+    internal KnownPlayerService KnownPlayerService { get; private set; } = null!;
     internal PartyListMonitorService PartyListMonitorService { get; private set; } = null!;
 
     public async Task LoadAsync(CancellationToken cancellationToken)
@@ -87,15 +90,19 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             Loc.Language = Configuration.Language;
 
             PartyFinderManager = new PartyFinderManager(this);
-            PFWindowManager.Enable(this, PartyFinderManager);
+            PartyFinderListTweaks = new PartyFinderListTweaks(this);
+            KnownPlayerService = new KnownPlayerService(this);
+            PFWindowManager.ApplySetting();
 
             MainWindow = new MainWindow(this);
             PFWindow = new PFWindow(this);
             PartyListWindow = new PartyListWindow(this);
+            PFListFilterWindow = new PFListFilterWindow(this);
 
             WindowSystem.AddWindow(MainWindow);
             WindowSystem.AddWindow(PFWindow);
             WindowSystem.AddWindow(PartyListWindow);
+            WindowSystem.AddWindow(PFListFilterWindow);
 
             CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
             {
@@ -147,15 +154,18 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             PFWindow?.Dispose();
             PartyListWindow?.Dispose();
 
+            PartyFinderListTweaks?.Dispose();
+            KnownPlayerService?.Dispose();
             PartyFinderManager?.Dispose();
+
+            // On the framework thread, where its detour runs, so the hook isn't torn down mid-call.
+            PFWindowManager.Dispose();
             FontManager.DisposeAll();
 
             CommandManager.RemoveHandler(CommandName);
             CommandManager.RemoveHandler(ALTCOMMAND);
             CommandManager.RemoveHandler(PartyListCommandName);
         });
-
-        PFWindowManager.Disable();
 
         PartyListMonitorService?.Dispose();
         CidCache?.Dispose();
@@ -267,6 +277,9 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     /// </summary>
     private unsafe void ManageWindowStates()
     {
+        // The job filter chip sits on the Party Finder list while the feature is on.
+        PFListFilterWindow.IsOpen = Configuration.EnableOneClickJobFilter && PartyFinderManager.IsListOpen;
+
         // PartyListWindow: open when config enabled, and at least one integration enabled
         if (!Configuration.ShowPartyListOverlay
             || (!Configuration.EnableFFLogsIntegrationOverlay && !Configuration.EnableTomestoneIntegration))

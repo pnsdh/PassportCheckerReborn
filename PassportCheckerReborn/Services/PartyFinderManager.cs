@@ -17,7 +17,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Timers;
 
 namespace PassportCheckerReborn.Services;
 
@@ -166,14 +165,6 @@ public sealed class PartyFinderManager : IDisposable
         }
     }
 
-    // ── Prevent auto-close on party changes ──────────────────────────────────
-    private int trackedPartyMemberCount;
-
-    // ── Auto-refresh ─────────────────────────────────────────────────────────
-    private System.Timers.Timer? autoRefreshTimer;
-    private int autoRefreshCountdown;
-
-    // ── Known-player cache ───────────────────────────────────────────────────
     // ── Blacklist cache ───────────────────────────────────────────────────────
     /// <summary>
     /// Set of "Name@World" strings read from the game's BlackList addon (node #9).
@@ -285,12 +276,6 @@ public sealed class PartyFinderManager : IDisposable
     public const string UnresolvedPlayerPrefix = "Unresolved Player ";
 
     // ── Context-menu "View Recruitment" pending selection ─────────────────
-    /// <summary>
-    /// When non-zero, the content ID of a player whose PF listing should be
-    /// auto-selected once the LookingForGroup addon is ready.
-    /// </summary>
-    private ulong pendingRecruitmentContentId;
-
     // ── Context-menu entry ───────────────────────────────────────────────────
     public PartyFinderManager(PassportCheckerReborn plugin)
     {
@@ -325,8 +310,6 @@ public sealed class PartyFinderManager : IDisposable
         PassportCheckerReborn.AddonLifecycle.RegisterListener(
             AddonEvent.PostSetup, "LookingForGroup", OnPFListSetup);
         PassportCheckerReborn.AddonLifecycle.RegisterListener(
-            AddonEvent.PostRefresh, "LookingForGroup", OnPFListRefresh);
-        PassportCheckerReborn.AddonLifecycle.RegisterListener(
             AddonEvent.PreFinalize, "LookingForGroup", OnPFListFinalize);
 
         // ── BlackList addon ──────────────────────────────────────────────────
@@ -348,9 +331,10 @@ public sealed class PartyFinderManager : IDisposable
                 PopulateListingDataDetour);
             populateListingHook.Enable();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            //PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to hook PopulateListingData.");
+            // Without this hook member ContentIds never arrive, so the overlay stays empty; say so in the log.
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to hook PopulateListingData.");
         }
 
         // ── CharaCard (adventure plate) hooks ───────────────────────────────
@@ -362,52 +346,31 @@ public sealed class PartyFinderManager : IDisposable
                 CharaCard.Addresses.HandleCurrentCharaCardDataPacket.Value,
                 CharaCardPacketHandlerDetour);
             charaCardPacketHandlerHook.Enable();
+        }
+        catch (Exception ex)
+        {
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to hook CharaCard.");
+        }
 
+        // Separate from the CharaCard hook: keeping the Party Finder open on party changes relies on this one
+        // alone (log message 947), so it must not be lost when the CharaCard hook fails.
+        try
+        {
             showLogMessageHook = PassportCheckerReborn.GameInteropProvider.HookFromAddress<RaptureLogModule.Delegates.ShowLogMessage>(
                 RaptureLogModule.Addresses.ShowLogMessage.Value,
                 ShowLogMessageDetour);
             showLogMessageHook.Enable();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            //PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to hook CharaCard/ShowLogMessage.");
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to hook ShowLogMessage.");
         }
-
-        // ── Track party member count (initial snapshot for close-suppression) ──
-        trackedPartyMemberCount = GetEffectivePartyCount();
-        //PassportCheckerReborn.Log.Information(
-        //    $"[PartyFinderManager] Initial tracked party count: {trackedPartyMemberCount} " +
-        //    $"(IPartyList={PassportCheckerReborn.PartyList.Length})");
 
         // ── Context menu (right-click → "View Recruitment") ─────────────────
         if (plugin.Configuration.RightClickPlayerNameForRecruitment3)
         {
             RegisterContextMenu();
         }
-    }
-
-    /// <summary>
-    /// Returns the current party member count using the best available source.
-    /// <see cref="IPartyList.Length"/> returns 0 for cross-world parties (which PF
-    /// always creates), so we read from <see cref="InfoProxyCrossRealm"/> first.
-    /// </summary>
-    public static unsafe int GetEffectivePartyCount()
-    {
-        try
-        {
-            var cwProxy = InfoProxyCrossRealm.Instance();
-            if (cwProxy != null && cwProxy->IsInCrossRealmParty)
-            {
-                var localIndex = cwProxy->LocalPlayerGroupIndex;
-                return InfoProxyCrossRealm.GetGroupMemberCount(localIndex);
-            }
-        }
-        catch
-        {
-            // Fall through to IPartyList
-        }
-
-        return PassportCheckerReborn.PartyList.Length;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -551,6 +514,13 @@ public sealed class PartyFinderManager : IDisposable
     /// </summary>
     private unsafe void ShowLogMessageDetour(RaptureLogModule* thisPtr, uint logMessageId)
     {
+        // The game announces that it is closing the Party Finder because the party changed, just before it
+        // does. If that close is going to be skipped (PFWindowManager), the announcement would be untrue.
+        if (logMessageId == PFWindowManager.PartyFinderClosedLogMessageId && PFWindowManager.TryInterceptClosedMessage())
+        {
+            return;
+        }
+
         // Only suppress error messages during active player name resolution
         if (isResolvingPlayerNames && logMessageId is > 5854 and < 5861)
         {
@@ -577,13 +547,11 @@ public sealed class PartyFinderManager : IDisposable
 
         try
         {
-            // Set flag to enable error message suppression during this request
-            isResolvingPlayerNames = true;
-
             // Throttle between requests
             await Task.Delay(CharaCardThrottleMs, ct);
 
-            var tcs = new TaskCompletionSource<CharaCardResult?>();
+            // Completed from the game's packet/log hooks, which must not run the awaiting resolve loop inline.
+            var tcs = new TaskCompletionSource<CharaCardResult?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             void Handler(CharaCardResult? result)
             {
@@ -612,6 +580,10 @@ public sealed class PartyFinderManager : IDisposable
                     var instance = CharaCard.Instance();
                     if (instance != null)
                     {
+                        // Arm the "plate hidden" suppression only as our request goes out (the handler is already
+                        // subscribed): armed earlier, a hidden-plate message from the user's own action would be
+                        // swallowed and taken as this player's answer, marking them Private by mistake.
+                        isResolvingPlayerNames = true;
                         instance->RequestCharaCardForContentId(contentId);
                     }
                 }
@@ -640,6 +612,22 @@ public sealed class PartyFinderManager : IDisposable
             // Always clear the flag when the request completes or fails
             isResolvingPlayerNames = false;
             charaCardRequestGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Marks every member still waiting on resolution as "Unresolved Player N", for when no source is left to
+    /// try. A waiting member counts as resolving (<see cref="HasUnresolvedMembers"/>), which keeps the overlay's
+    /// lookup buttons disabled, so leaving them waiting would disable the buttons for good.
+    /// </summary>
+    private void MarkRemainingUnresolved()
+    {
+        for (var i = 0; i < MembersCount(); i++)
+        {
+            if (TryGetMember(i, out var m) && m.Name.StartsWith(UnresolvedNamePrefix, StringComparison.Ordinal))
+            {
+                ReplaceMemberIfMatch(i, m.ContentId, m with { Name = $"Unresolved Player {i + 1}" });
+            }
         }
     }
 
@@ -700,7 +688,12 @@ public sealed class PartyFinderManager : IDisposable
         }
 
         // ── Phase 1: CharaCard for still-unresolved members ──
-        if (charaCardAvailable)
+        if (!charaCardAvailable)
+        {
+            // PlayerTrack was the only source and is done; whoever it didn't know can't be resolved.
+            MarkRemainingUnresolved();
+        }
+        else
         {
             for (var i = 0; i < MembersCount(); i++)
             {
@@ -751,7 +744,7 @@ public sealed class PartyFinderManager : IDisposable
                         plugin.CidCache.Set(member.ContentId, resolvedInfo.Name, resolvedInfo.WorldId, worldName);
                         resolved = true;
 
-                        ReplaceMemberIfMatch(i, member.ContentId, member with { Name = resolvedInfo.Name, World = worldName });
+                        ReplaceMemberIfMatch(i, member.ContentId, member with { Name = resolvedInfo.Name, World = worldName, WorldId = resolvedInfo.WorldId });
                     }
                     else if (ptFallback && TryApplyPlayerTrack(i, member))
                     {
@@ -852,13 +845,16 @@ public sealed class PartyFinderManager : IDisposable
                         plugin.CidCache.Set(member.ContentId, r.Name, r.WorldId, worldName);
                         resolved = true;
 
-                        var nameChanged = !string.Equals(r.Name, member.Name, StringComparison.Ordinal);
-                        if ((nameChanged || member.FromPlayerTrack)
+                        // A world transfer under the same name counts too: lookups must go to the new server.
+                        var identityChanged = !string.Equals(r.Name, member.Name, StringComparison.Ordinal)
+                                              || r.WorldId != member.WorldId
+                                              || !string.Equals(worldName, member.World, StringComparison.Ordinal);
+                        if ((identityChanged || member.FromPlayerTrack)
                             && ReplaceMemberIfMatch(i, member.ContentId,
-                                member with { Name = r.Name, World = worldName, FromPlayerTrack = false })
-                            && nameChanged)
+                                member with { Name = r.Name, World = worldName, WorldId = r.WorldId, FromPlayerTrack = false })
+                            && identityChanged)
                         {
-                            PassportCheckerReborn.Log.Debug($"[PCR:Reverify] Slot {i} name refreshed to a newer value.");
+                            PassportCheckerReborn.Log.Debug($"[PCR:Reverify] Slot {i} name/world refreshed to a newer value.");
                         }
                     }
 
@@ -946,6 +942,7 @@ public sealed class PartyFinderManager : IDisposable
                 {
                     Name = rec.Name,
                     World = rec.WorldName,
+                    WorldId = rec.WorldId,
                     IsPrivate = false,
                     FromPlayerTrack = true,
                 }))
@@ -966,11 +963,6 @@ public sealed class PartyFinderManager : IDisposable
     private void OnPFDetailSetup(AddonEvent type, AddonArgs args)
     {
         IsDetailOpen = true;
-        trackedPartyMemberCount = GetEffectivePartyCount();
-        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] Detail OPENED (partyCount={trackedPartyMemberCount}).");
-
-        // Pause auto-refresh while the detail pane is open (matches DailyRoutines pattern)
-        StopAutoRefreshTimer();
 
         // Refresh the blacklist cache in case entries changed since last open
         ReadBlacklistFromAddon();
@@ -1034,12 +1026,6 @@ public sealed class PartyFinderManager : IDisposable
 
         // Persist any names that were cached during this detail-pane session.
         plugin.CidCache.Save();
-
-        // Resume auto-refresh
-        if (IsListOpen)
-        {
-            StartAutoRefreshTimer();
-        }
     }
 
     /// <summary>True when a LookingForGroupDetail pane exists and is visible on screen.</summary>
@@ -1069,97 +1055,11 @@ public sealed class PartyFinderManager : IDisposable
     private void OnPFListSetup(AddonEvent type, AddonArgs args)
     {
         IsListOpen = true;
-        trackedPartyMemberCount = GetEffectivePartyCount();
-        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] List OPENED (partyCount={trackedPartyMemberCount}).");
-        StartAutoRefreshTimer();
-        TryProcessPendingRecruitment();
-    }
-
-    private void OnPFListRefresh(AddonEvent type, AddonArgs args)
-    {
-        // Reset auto-refresh timer when player manually refreshes
-        if (plugin.Configuration.EnableAutomaticRefresh)
-        {
-            // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
-        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
-        }
-
-        TryProcessPendingRecruitment();
     }
 
     private void OnPFListFinalize(AddonEvent type, AddonArgs args)
     {
-        //PassportCheckerReborn.Log.Information($"[PartyFinderManager] List CLOSED (partyCount={GetEffectivePartyCount()}, tracked={trackedPartyMemberCount}).");
         IsListOpen = false;
-        pendingRecruitmentContentId = 0;
-        StopAutoRefreshTimer();
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Auto-Refresh
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private void StartAutoRefreshTimer()
-    {
-        if (!plugin.Configuration.EnableAutomaticRefresh)
-        {
-            return;
-        }
-
-        // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
-        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
-
-        autoRefreshTimer?.Dispose();
-        autoRefreshTimer = new System.Timers.Timer(1000); // tick every second
-        autoRefreshTimer.AutoReset = true;
-        autoRefreshTimer.Elapsed += OnAutoRefreshTick;
-        autoRefreshTimer.Start();
-    }
-
-    private void StopAutoRefreshTimer()
-    {
-        if (autoRefreshTimer is not null)
-        {
-            autoRefreshTimer.Elapsed -= OnAutoRefreshTick;
-            autoRefreshTimer.Stop();
-            autoRefreshTimer.Dispose();
-            autoRefreshTimer = null;
-        }
-    }
-
-    private unsafe void OnAutoRefreshTick(object? sender, ElapsedEventArgs e)
-    {
-        // Don't refresh while detail pane is open
-        if (IsDetailOpen || !IsListOpen)
-        {
-            StopAutoRefreshTimer();
-            return;
-        }
-
-        if (autoRefreshCountdown > 1)
-        {
-            autoRefreshCountdown--;
-            return;
-        }
-
-        // Reset countdown
-        // Clamp: a hand-edited config of 0/negative would otherwise make the countdown refresh every second.
-        autoRefreshCountdown = Math.Max(5, plugin.Configuration.AutoRefreshIntervalSeconds);
-
-        // Request PF listing update on the framework thread (game API calls must
-        // happen on the main thread). Uses AgentLookingForGroup as shown in the
-        // DailyRoutines AutoRefreshPartyFinder reference.
-        PassportCheckerReborn.Framework.RunOnFrameworkThread(() =>
-        {
-            try
-            {
-                AgentLookingForGroup.Instance()->RequestListingsUpdate();
-            }
-            catch (Exception ex)
-            {
-                PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Auto-refresh failed.");
-            }
-        });
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -1200,133 +1100,34 @@ public sealed class PartyFinderManager : IDisposable
         });
     }
 
+    /// <summary>
+    /// Asks the server to open the player's Party Finder listing by their ContentId (upstream 34aad39). The server
+    /// answers with the listing, or with its own error if the player has none, so this works for any player
+    /// and any page, not only listings that happened to arrive as packets this session.
+    /// </summary>
     private unsafe void OnViewRecruitmentClicked(Dalamud.Game.Gui.ContextMenu.IMenuItemClickedArgs args)
     {
-        if (args.Target is not Dalamud.Game.Gui.ContextMenu.MenuTargetDefault target)
+        if (args.Target is not Dalamud.Game.Gui.ContextMenu.MenuTargetDefault { TargetContentId: not 0 } target)
         {
             return;
         }
-
-        var contentId = target.TargetContentId;
-
-        // Check if this player has a known PF listing
-        if (!pfListingPlayerCache.TryGetValue(contentId, out var cached) || cached.ListingId == 0)
-        {
-            PassportCheckerReborn.ChatGui.Print(
-                $"[PassportChecker] {Loc.T("No active Party Finder listing found for this player.")}");
-            return;
-        }
-
-        // Store the pending selection
-        pendingRecruitmentContentId = contentId;
-
-        PassportCheckerReborn.Framework.RunOnFrameworkThread(() =>
-        {
-            try
-            {
-                var agent = AgentLookingForGroup.Instance();
-                if (agent == null)
-                {
-                    PassportCheckerReborn.ChatGui.Print(
-                        $"[PassportChecker] {Loc.T("Unable to open Party Finder.")}");
-                    pendingRecruitmentContentId = 0;
-                    return;
-                }
-
-                // If PF is already open, try to select the listing immediately
-                if (IsListOpen)
-                {
-                    // Request a refresh first so the listing data is current
-                    agent->RequestListingsUpdate();
-                    // Selection will be attempted in OnPFListRefresh via TryProcessPendingRecruitment
-                }
-                else
-                {
-                    // Open the PF window; selection will be attempted in OnPFListSetup
-                    agent->Show();
-                }
-            }
-            catch (Exception ex)
-            {
-                PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] View Recruitment failed.");
-                pendingRecruitmentContentId = 0;
-            }
-        });
-    }
-
-    /// <summary>
-    /// Attempts to process a pending "View Recruitment" selection by finding
-    /// the matching listing in the currently displayed PF list and selecting it.
-    /// Called from PF list setup/refresh handlers.
-    /// </summary>
-    private unsafe void TryProcessPendingRecruitment()
-    {
-        var targetContentId = pendingRecruitmentContentId;
-        if (targetContentId == 0)
-        {
-            return;
-        }
-
-        // Only attempt once per click
-        pendingRecruitmentContentId = 0;
-
-        if (!pfListingPlayerCache.TryGetValue(targetContentId, out var cached) || cached.ListingId == 0)
-        {
-            return;
-        }
-
-        var targetListingId = cached.ListingId;
 
         try
         {
+            // The function is found by signature when the game loads; if a game update broke that, calling it
+            // would jump to address 0 and crash the game, so check first.
             var agent = AgentLookingForGroup.Instance();
-            if (agent == null)
-            {
-                return;
-            }
-
-            // Scan the agent's displayed listing IDs to find the target
-            var listingIds = agent->Listings.ListingIds;
-            var foundIndex = -1;
-            for (var i = 0; i < listingIds.Length; i++)
-            {
-                if (listingIds[i] == targetListingId)
-                {
-                    foundIndex = i;
-                    break;
-                }
-            }
-
-            if (foundIndex < 0)
+            if (agent == null
+                || AgentLookingForGroup.Addresses.OpenListingByContentId.Value == 0
+                || !agent->OpenListingByContentId(target.TargetContentId))
             {
                 PassportCheckerReborn.ChatGui.Print(
-                    $"[PassportChecker] {string.Format(Loc.T("Listing by {0} not found on the current page. It may have expired or be on a different category/page."), cached.Name)}");
-                return;
+                    $"[PassportChecker] {Loc.T("Unable to request this player's Party Finder listing.")}");
             }
-
-            // Fire a callback on the LookingForGroup addon to select this listing row.
-            // The addon's callback handler expects: [0] = 3 (select listing action), [1] = listing index.
-            var addonPtr = PassportCheckerReborn.GameGui.GetAddonByName("LookingForGroup");
-            if (addonPtr.IsNull)
-            {
-                return;
-            }
-
-            var addon = (AtkUnitBase*)addonPtr.Address;
-            var atkValues = stackalloc AtkValue[2];
-            atkValues[0].Type = AtkValueType.Int;
-            atkValues[0].Int = 3;
-            atkValues[1].Type = AtkValueType.Int;
-            atkValues[1].Int = foundIndex;
-            addon->FireCallback(2, atkValues);
-
-            PassportCheckerReborn.Log.Information(
-                $"[PartyFinderManager] Selected listing {targetListingId} by {cached.Name} at index {foundIndex}.");
         }
         catch (Exception ex)
         {
-            PassportCheckerReborn.Log.Warning(ex,
-                "[PartyFinderManager] Failed to select listing for View Recruitment.");
+            PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] View Recruitment failed.");
         }
     }
 
@@ -1654,6 +1455,11 @@ public sealed class PartyFinderManager : IDisposable
                     resolveCts = new CancellationTokenSource();
                     _ = ResolveUnresolvedMembersAsync(resolveCts.Token);
                 }
+                else if (hasUnresolved)
+                {
+                    // Nothing can resolve them, so they must not stay "resolving" (which keeps the lookup buttons off).
+                    MarkRemainingUnresolved();
+                }
             }
         }
         catch (Exception ex)
@@ -1729,6 +1535,13 @@ public sealed class PartyFinderManager : IDisposable
     /// </summary>
     private unsafe void ReadBlacklistFromAddon()
     {
+        // Logged out (e.g. the plugin loading at the title screen), the game's list is empty, and reading it
+        // would wipe the blacklist seeded from disk.
+        if (!PassportCheckerReborn.ClientState.IsLoggedIn)
+        {
+            return;
+        }
+
         var newEntries = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -1757,7 +1570,9 @@ public sealed class PartyFinderManager : IDisposable
         }
         catch (Exception ex)
         {
+            // Keep the last good list rather than replacing it with a partial or empty read.
             PassportCheckerReborn.Log.Warning(ex, "[PartyFinderManager] Failed to read BlackList string array.");
+            return;
         }
 
         blacklistedPlayers.Clear();
@@ -1788,7 +1603,6 @@ public sealed class PartyFinderManager : IDisposable
         resolveCts?.Cancel();
         resolveCts?.Dispose();
 
-        StopAutoRefreshTimer();
         UnregisterContextMenu();
 
         // Drop the deferred teardown handler; leaving it subscribed would let it fire on a disposed instance.
@@ -1798,7 +1612,6 @@ public sealed class PartyFinderManager : IDisposable
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFDetailRefresh);
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFDetailFinalize);
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFListSetup);
-        PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFListRefresh);
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnPFListFinalize);
         PassportCheckerReborn.AddonLifecycle.UnregisterListener(OnBlacklistAddonUpdated);
 
@@ -1807,7 +1620,9 @@ public sealed class PartyFinderManager : IDisposable
         populateListingHook?.Dispose();
         charaCardPacketHandlerHook?.Dispose();
         showLogMessageHook?.Dispose();
-        charaCardRequestGate.Dispose();
+
+        // charaCardRequestGate is deliberately not disposed: a cancelled resolve may still be releasing it,
+        // and disposing it under that release only throws ObjectDisposedException.
 
         ClearMembers();
         pfListingPlayerCache.Clear();
