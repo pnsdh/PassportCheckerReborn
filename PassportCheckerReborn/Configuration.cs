@@ -40,7 +40,7 @@ public enum PlayerTrackResolutionPriority
 }
 
 [Serializable]
-public class Configuration : IPluginConfiguration
+public class Configuration : IPluginConfiguration, IM3Settings
 {
     public int Version { get; set; } = 1;
 
@@ -135,10 +135,16 @@ public class Configuration : IPluginConfiguration
 
     // ── Appearance ───────────────────────────────────────────────────────────
     /// <summary>Seed colour the Material theme generates every window's palette from.</summary>
-    public Vector4 UiAccentColor { get; set; } = UI.M3.DefaultSeed;
+    public Vector4 UiAccentColor { get; set; } = M3.DefaultSeed;
 
     /// <summary>Text size of the plugin's windows, as a multiple of the Dalamud default font size.</summary>
     public float UiTextScale { get; set; } = 1.1f;
+
+    /// <summary>Size of the UI controls, as a multiple (RebornMaterial's element size).</summary>
+    public float UiElementScale { get; set; } = 1f;
+
+    /// <summary>Padding and spacing, as a multiple on top of the element size.</summary>
+    public float UiPaddingScale { get; set; } = 1f;
 
     public void Save()
     {

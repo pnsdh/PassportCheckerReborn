@@ -36,12 +36,22 @@
   <ItemGroup>
 	<Using Include="Dalamud.Interface" />
 	<Using Include="Dalamud.Bindings.ImGui" />
+	<Using Include="RebornMaterial" />
   </ItemGroup>
 
-    <!-- Keep referenced DLLs out of the output: Dalamud provides everything else the plugin uses. -->
+  <ItemGroup>
+	<EmbeddedResource Include="Resources\PCR_Icon.png" />
+  </ItemGroup>
+
+  <!-- The UI library: the pnsdh fork of RebornMaterial (Hangul fonts etc.), as a git submodule. -->
+  <ItemGroup>
+	<ProjectReference Include="..\lib\RebornMaterial\RebornMaterial\RebornMaterial.csproj" />
+  </ItemGroup>
+
+    <!-- Keep referenced DLLs out of the output: Dalamud provides everything else the plugin uses (RebornMaterial ships with it). -->
     <Target Name="PruneOutputDlls" AfterTargets="ResolveReferences">
         <ItemGroup>
-            <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)' != 'PassportCheckerReborn'" />
+            <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)' != 'PassportCheckerReborn' and '%(Filename)' != 'RebornMaterial'" />
         </ItemGroup>
     </Target>
 

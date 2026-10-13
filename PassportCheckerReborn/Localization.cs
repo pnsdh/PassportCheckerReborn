@@ -50,10 +50,22 @@ public static class Loc
         ["Copy"] = "복사",
         ["Copied"] = "복사됨",
         ["Clear"] = "비우기",
+        ["Close"] = "닫기",
         ["Delete"] = "삭제",
         ["Cancel"] = "취소",
         ["Unsaved changes."] = "저장되지 않은 변경 사항이 있습니다.",
         ["Clear search"] = "검색어 지우기",
+        // Strings built into the RebornMaterial UI library (passed in via M3Fork.Localize).
+        ["Hold to confirm"] = "길게 눌러 확인",
+        ["Minimize"] = "최소화",
+        ["Restore"] = "복원",
+        ["Reset to default"] = "기본값으로 되돌리기",
+        ["Search"] = "검색",
+        ["No matches"] = "일치하는 항목 없음",
+        ["Nothing to pick"] = "선택할 항목 없음",
+        ["Reset"] = "초기화",
+        ["Press a key"] = "키를 누르세요",
+        ["None"] = "없음",
 
         // ── General page ─────────────────────────────────────────────────────
         ["Listing details"] = "모집 상세",
@@ -241,10 +253,13 @@ public static class Loc
             = "PlayerTrack으로 조회한 이름은 오버레이에 PT 태그로 표시됩니다. 멤버의 이름(또는 태그)에 마우스를 올리면 이름 출처, 캐시 데이터의 오래됨 정도, 이전 이름을 볼 수 있습니다.",
 
         // ── Appearance page ──────────────────────────────────────────────────
-        ["Text"] = "글자",
         ["Text size"] = "글자 크기",
+        ["Size"] = "크기",
+        ["Element size"] = "요소 크기",
+        ["Size of buttons, switches and other controls."] = "버튼, 스위치 등 컨트롤의 크기입니다.",
+        ["Spacing"] = "여백",
+        ["Padding and gaps between controls, on top of the element size."] = "컨트롤 안팎의 여백과 간격입니다. 요소 크기에 더해 적용됩니다.",
         ["Size of the text in the plugin's windows, relative to Dalamud's default font."] = "플러그인 창의 글자 크기입니다. Dalamud 기본 글꼴 크기가 기준입니다.",
-        ["Preparing the new text size…"] = "새 글자 크기를 준비하는 중…",
         ["Theme"] = "테마",
         ["Every color in the plugin's windows is generated from one accent color."] = "플러그인 창의 모든 색상은 하나의 강조 색상에서 만들어집니다.",
         ["Accent color"] = "강조 색상",
@@ -263,7 +278,11 @@ public static class Loc
         ["Passport Checker Reborn"] = "Passport Checker Reborn",
         ["Passport Checker Reborn is an open-source alternative to the PFFinder plugin. It shows a member-info overlay alongside party finder listings, integrates with Tomestone.gg and FFLogs for quick prog-point lookups, and offers quality-of-life improvements to the party finder UI."]
             = "Passport Checker Reborn은 PFFinder 플러그인의 오픈소스 대안입니다. 파티 찾기 모집 옆에 멤버 정보 오버레이를 표시하고, Tomestone.gg 및 FFLogs와 연동해 빠른 진행도 조회를 제공하며, 파티 찾기 UI에 편의 기능을 더합니다.",
-        ["Support on Ko-fi"] = "Ko-fi로 후원하기",
+        ["Support the original developers on Ko-fi"] = "Ko-fi로 원작자 후원하기",
+        ["Goes to the original Passport Checker Reborn team (The Combat Reborn Team), not to the maintainer of this Custom version."]
+            = "원작 Passport Checker Reborn 개발팀(The Combat Reborn Team)에게 가는 후원입니다. 이 커스텀 버전 관리자에게 가는 후원이 아닙니다.",
+        ["Support the original developers on Ko-fi (The Combat Reborn Team, not this Custom version)"]
+            = "Ko-fi로 원작자 후원하기 (원작 개발팀 The Combat Reborn Team, 이 커스텀 버전 아님)",
         ["Source code"] = "소스 코드",
         ["Contact (Discord)"] = "문의 (디스코드)",
         ["Commands"] = "명령어",

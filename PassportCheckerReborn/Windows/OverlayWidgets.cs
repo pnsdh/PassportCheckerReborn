@@ -3,7 +3,6 @@ using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Utility;
 using PassportCheckerReborn.Services;
-using PassportCheckerReborn.UI;
 using System;
 using System.Numerics;
 
@@ -150,7 +149,7 @@ internal static class OverlayWidgets
             }
             else
             {
-                ImguiTooltips.ShowTooltip(tooltip);
+                M3Tooltip.Show(tooltip);
             }
         }
 
@@ -407,7 +406,7 @@ internal static class OverlayWidgets
         MutedText(Loc.T("Not on FFLogs"));
         if (ImGui.IsItemHovered())
         {
-            ImguiTooltips.ShowTooltip(Loc.T("FFLogs has no character with this name on this server. They may never have uploaded a log, or renamed or changed servers recently."));
+            M3Tooltip.Show(Loc.T("FFLogs has no character with this name on this server. They may never have uploaded a log, or renamed or changed servers recently."));
         }
     }
 
@@ -417,7 +416,7 @@ internal static class OverlayWidgets
         ImGui.TextColored(M3.Scheme.Error, Loc.T("Lookup failed"));
         if (ImGui.IsItemHovered())
         {
-            ImguiTooltips.ShowTooltip(Loc.T("FFLogs lookup failed (network or rate limit) — refresh to retry."));
+            M3Tooltip.Show(Loc.T("FFLogs lookup failed (network or rate limit) — refresh to retry."));
         }
     }
 

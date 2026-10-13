@@ -1,0 +1,3 @@
+[submodule "lib/RebornMaterial"]
+	path = lib/RebornMaterial
+	url = https://github.com/pnsdh/RebornMaterial.git

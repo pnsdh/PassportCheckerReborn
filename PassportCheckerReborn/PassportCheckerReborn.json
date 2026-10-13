@@ -3,7 +3,7 @@
     "Name": "Passport Checker Reborn (Custom)",
     "InternalName": "PassportCheckerReborn",
     "RepoUrl": "https://github.com/pnsdh/PassportCheckerReborn",
-    "Description": "파티 찾기 목록 옆에 멤버 정보 오버레이를 표시하는 플러그인입니다. 한국 서버에 맞게 수정한 버전으로, 한국 월드/FFLogs 매핑, 한국어 UI, PlayerTrack 기반 비공개 플레이어 이름 복원을 지원합니다.",
+    "Description": "파티 찾기 목록 옆에 멤버 정보 오버레이를 표시하는 플러그인입니다. 한국 서버에 맞게 수정한 버전으로, 한국 서버/FFLogs 매핑, 한국어 UI, PlayerTrack 기반 비공개 플레이어 이름 복원, 친구·자유부대·링크셸 멤버 강조, 파티 찾기 목록의 남은 시간 순 정렬·페이지당 100개·원클릭 직업 필터를 지원합니다.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "TestingDalamudApiLevel": 15,

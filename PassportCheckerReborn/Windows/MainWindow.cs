@@ -2,7 +2,6 @@ using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
 using PassportCheckerReborn.Services;
-using PassportCheckerReborn.UI;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -11,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace PassportCheckerReborn.Windows;
 
-public class MainWindow : Window, IDisposable
+public partial class MainWindow : Window, IDisposable
 {
     private enum Page
     {
@@ -26,7 +25,7 @@ public class MainWindow : Window, IDisposable
 
     private const string KofiUrl = "https://ko-fi.com/ltscombatreborn";
     private const string RepoUrl = "https://github.com/pnsdh/PassportCheckerReborn";
-    private const string DiscordUrl = "https://discord.gg/AjVHyDNjUd";
+    private const string DiscordUrl = "https://discord.gg/R75tq68bA9";
     private const string FFLogsClientsUrl = "https://www.fflogs.com/api/clients/";
     private const string FFLogsExampleClientName = "PassportCheckerReborn";
     private const string FFLogsExampleRedirectUrl = "https://example.com/";
@@ -44,7 +43,7 @@ public class MainWindow : Window, IDisposable
     private static readonly string[] OverlayPositionNames = Enum.GetNames<PartyListOverlayPosition>();
 
     /// <summary>The unit suffixes the settings sliders use; the widest sets the shared readout gutter.</summary>
-    private static readonly string[] SliderUnits = [" s", " days", " h"];
+    private static readonly string[] SliderUnits = [" s", " days", " h", "%"];
 
     /// <summary>The text size steps offered on the Appearance page.</summary>
     private static readonly float[] TextScaleSteps = [1.0f, 1.1f, 1.2f, 1.35f];
@@ -88,42 +87,17 @@ public class MainWindow : Window, IDisposable
     private double copiedAt;
 
     public MainWindow(PassportCheckerReborn plugin)
-        : base("Passport Checker Reborn (Custom) – Settings###PassportCheckerRebornSettings",
-               ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+        : base("Passport Checker Reborn (Custom) – Settings###PassportCheckerRebornSettings", BaseFlags)
     {
         this.plugin = plugin;
 
-        Size = new Vector2(820, 600);
+        Size = DefaultSize;
         SizeCondition = ImGuiCond.FirstUseEver;
-        SizeConstraints = new WindowSizeConstraints
-        {
-            MinimumSize = new Vector2(440, 360),
-            MaximumSize = new Vector2(1600, 1400)
-        };
+        SizeConstraints = DefaultSizeConstraints;
 
-        TitleBarButtons.Add(new TitleBarButton()
-        {
-            Icon = FontAwesomeIcon.MugHot,
-            ShowTooltip = () =>
-            {
-                ImGui.BeginTooltip();
-                ImGui.Text("Support the developer on Ko-fi");
-                ImGui.EndTooltip();
-            },
-            Priority = 2,
-            Click = _ =>
-            {
-                try
-                {
-                    Util.OpenLink(KofiUrl);
-                }
-                catch
-                {
-                    // ignored
-                }
-            },
-            AvailableClickthrough = true
-        });
+        // Dalamud offers these from the title bar, which this window no longer has (see MainWindow_WindowBar).
+        AllowPinning = false;
+        AllowClickthrough = false;
 
         fflogsClientIdInput = Configuration.FFLogsClientId;
         fflogsClientSecretInput = Configuration.FFLogsClientSecret;
@@ -145,13 +119,24 @@ public class MainWindow : Window, IDisposable
         GC.SuppressFinalize(this);
     }
 
+    public override void OnOpen()
+    {
+        // A pin or click-through set back when the title bar offered them could no longer be undone.
+        IsPinned = false;
+        IsClickthrough = false;
+    }
+
+    // The theme goes on before ImGui.Begin, which draws the window's own background and rounding.
     public override void PreDraw()
     {
         theme = M3Style.Push();
+        PrepareFold();
     }
 
     public override void PostDraw()
     {
+        // Draw pops these as soon as Begin has them, but Draw is skipped when Begin returns false.
+        fold.PopStyle();
         theme?.Dispose();
         theme = null;
     }
@@ -166,6 +151,9 @@ public class MainWindow : Window, IDisposable
 
         M3Motion.Reset();
         M3CardHost.Reset();
+
+        // Closed while folded, the window next opens unfolded.
+        fold.Reset();
     }
 
     public override void Draw()
@@ -173,11 +161,43 @@ public class MainWindow : Window, IDisposable
         // Body text follows the text size setting.
         using var bodyFont = ImRaii.PushFont(M3.Body);
 
-        DrawBackdrop();
-
         if (page == Page.Tomestone && !TomestoneAvailable)
         {
             page = Page.General;
+        }
+
+        fold.BeginDraw();
+
+        var folded = fold.Amount;
+        if (folded < 1f)
+        {
+            using var alpha = ImRaii.PushStyle(ImGuiStyleVar.Alpha, ImGui.GetStyle().Alpha * (1f - MathF.Min(1f, folded * 1.4f)));
+            DrawBackdrop(fold.Rounding);
+
+            var (openPos, openSize) = fold.OpenRect();
+            DrawContent(openPos, openSize);
+        }
+
+        DrawWindowBar();
+
+        if (savePending && !ImGui.IsAnyItemActive())
+        {
+            Configuration.Save();
+            savePending = false;
+        }
+    }
+
+    // Laid out at the window's open rect even while it folds, so the window shrinks over the page
+    // rather than the page reflowing to fit it.
+    private void DrawContent(Vector2 openPos, Vector2 openSize)
+    {
+        var padding = fold.OpenPadding;
+        ImGui.SetCursorScreenPos(openPos + padding);
+        using var content = ImRaii.Child("##pcr_window_content", Vector2.Max(Vector2.One, openSize - (padding * 2f)), false,
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoBackground);
+        if (!content)
+        {
+            return;
         }
 
         var scale = M3.Scale;
@@ -195,25 +215,29 @@ public class MainWindow : Window, IDisposable
         DrawNavigation(navWidth);
         ImGui.SameLine(0f, spacing);
         DrawBody();
-
-        if (savePending && !ImGui.IsAnyItemActive())
-        {
-            Configuration.Save();
-            savePending = false;
-        }
     }
 
-    /// <summary>A soft tonal wash across the top of the window.</summary>
-    private static void DrawBackdrop()
+    /// <summary>A soft tonal wash across the top of the window, following its rounded corners.</summary>
+    private static void DrawBackdrop(float rounding)
     {
         var s = M3.Scheme;
-        var windowPos = ImGui.GetWindowPos();
-        var top = windowPos.Y + ImGui.GetCursorStartPos().Y - ImGui.GetStyle().WindowPadding.Y;
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetWindowPos();
+        var size = ImGui.GetWindowSize();
+        var top = M3.Alpha(s.SurfaceContainer, 0.65f);
 
-        M3Draw.VerticalGradient(ImGui.GetWindowDrawList(),
-            new Vector2(windowPos.X, top),
-            new Vector2(windowPos.X + ImGui.GetWindowSize().X, top + (200f * M3.Scale)),
-            M3.Alpha(s.SurfaceContainer, 0.65f), M3.Alpha(s.Surface, 0f));
+        var min = pos;
+        var max = new Vector2(pos.X + size.X, pos.Y + MathF.Min(200f * M3.Scale, size.Y));
+        rounding = MathF.Min(rounding, (max.Y - min.Y) * 0.5f);
+
+        drawList.PushClipRect(pos, pos + size, false);
+        if (rounding > 0f)
+        {
+            drawList.AddRectFilled(min, new Vector2(max.X, min.Y + rounding), M3.U32(top), rounding, ImDrawFlags.RoundCornersTop);
+        }
+
+        M3Draw.VerticalGradient(drawList, new Vector2(min.X, min.Y + rounding), max, top, M3.Alpha(s.Surface, 0f));
+        drawList.PopClipRect();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -301,27 +325,37 @@ public class MainWindow : Window, IDisposable
             ? new Vector2(min.X + (8f * scale) + (badge * 0.5f), min.Y + (height * 0.5f))
             : new Vector2(min.X + (width * 0.5f), min.Y + (height * 0.5f));
         var half = new Vector2(badge * 0.5f);
-        drawList.AddCircleFilled(center, badge * 0.5f, M3.U32(s.PrimaryContainer), 32);
-        M3Draw.IconCentered(drawList, FontAwesomeIcon.Passport, center - half, center + half, s.OnPrimaryContainer);
+        if (Logo is { } logo)
+        {
+            drawList.AddImage(logo.Handle, center - half, center + half, Vector2.Zero, Vector2.One, M3.U32(Vector4.One));
+        }
+        else
+        {
+            drawList.AddCircleFilled(center, badge * 0.5f, M3.U32(s.PrimaryContainer), 32);
+            M3Draw.IconCentered(drawList, FontAwesomeIcon.Passport, center - half, center + half, s.OnPrimaryContainer);
+        }
 
         if (expanded)
         {
-            const string tagline = "REBORN · CUSTOM";
             var textX = center.X + (badge * 0.5f) + (10f * scale);
             var textWidth = MathF.Max(16f * scale, max.X - textX - (4f * scale));
             var gap = 1f * scale;
 
+            // Never cut off with an ellipsis: when the full name doesn't fit (larger text sizes, narrow
+            // drawer), fall back to the abbreviation the window bar's pill uses.
             string name;
             Vector2 nameSize;
             using (ImRaii.PushFont(M3.TitleMedium))
             {
-                name = M3Navigation.Truncate("Passport Checker", textWidth);
+                name = FirstThatFits(textWidth, "Passport Checker", "PCR");
                 nameSize = ImGui.CalcTextSize(name);
             }
 
+            string tagline;
             Vector2 taglineSize;
             using (ImRaii.PushFont(M3.LabelSmall))
             {
+                tagline = FirstThatFits(textWidth, "REBORN · CUSTOM", "CUSTOM");
                 taglineSize = ImGui.CalcTextSize(tagline);
             }
 
@@ -339,13 +373,27 @@ public class MainWindow : Window, IDisposable
 
         if (hovered)
         {
-            ImguiTooltips.ShowTooltip(Loc.T("About Passport Checker Reborn"));
+            M3Tooltip.Show(Loc.T("About Passport Checker Reborn"));
         }
 
         if (pressed)
         {
             page = Page.About;
         }
+    }
+
+    /// <summary>The first of <paramref name="candidates"/> that fits <paramref name="width"/> in the current font, else the last.</summary>
+    private static string FirstThatFits(float width, params string[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (ImGui.CalcTextSize(candidate).X <= width)
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[^1];
     }
 
     /// <summary>The installed version, pinned to the bottom of the navigation column.</summary>
@@ -424,7 +472,17 @@ public class MainWindow : Window, IDisposable
         var s = M3.Scheme;
         var scale = M3.Scale;
         var (title, subtitle) = PageHeading(page);
-        var width = MathF.Max(64f * scale, ImGui.GetContentRegionAvail().X);
+        var fullWidth = MathF.Max(64f * scale, ImGui.GetContentRegionAvail().X);
+
+        // Minimize and close always show; the other actions leave room for a few characters of the title.
+        var shown = WindowActions.Length;
+        while (shown > 0 && M3Widgets.WindowActionsSize(shown, Brand, 0f).X + (96f * scale) > fullWidth)
+        {
+            shown--;
+        }
+
+        var barSize = M3Widgets.WindowActionsSize(shown, Brand, 0f);
+        var width = MathF.Max(32f * scale, fullWidth - barSize.X - (12f * scale));
 
         // Measured rather than placed at fixed offsets: the font's line height does not track
         // the UI scale, so hard-coded offsets overlap.
@@ -442,7 +500,7 @@ public class MainWindow : Window, IDisposable
 
         string clippedSubtitle;
         Vector2 subtitleSize;
-        using (ImRaii.PushFont(M3.BodySmall))
+        using (ImRaii.PushFont(M3Fork.BodySmall))
         {
             clippedSubtitle = M3Navigation.Truncate(subtitle, width);
             subtitleSize = ImGui.CalcTextSize(clippedSubtitle);
@@ -450,7 +508,10 @@ public class MainWindow : Window, IDisposable
 
         var contentHeight = titleSize.Y + lineGap + subtitleSize.Y;
         var height = MathF.Max(52f * scale, padTop + contentHeight + padBottom);
-        ImGui.Dummy(new Vector2(width, height));
+        ImGui.Dummy(new Vector2(fullWidth, height));
+
+        shownActions = shown;
+        fold.BarTop = (height - barSize.Y) * 0.5f;
 
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
@@ -462,13 +523,13 @@ public class MainWindow : Window, IDisposable
             drawList.AddText(new Vector2(min.X, textTop), M3.U32(s.OnSurface, 0.98f), clippedTitle);
         }
 
-        using (ImRaii.PushFont(M3.BodySmall))
+        using (ImRaii.PushFont(M3Fork.BodySmall))
         {
             drawList.AddText(new Vector2(min.X, textTop + titleSize.Y + lineGap), M3.U32(s.OnSurfaceVariant, 0.88f), clippedSubtitle);
         }
 
         drawList.AddLine(new Vector2(min.X, max.Y), max, M3.U32(s.OutlineVariant, 0.5f), 1f * scale);
-        ImGui.Dummy(new Vector2(width, M3.Space2));
+        ImGui.Dummy(new Vector2(fullWidth, M3.Space2));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1172,7 +1233,7 @@ public class MainWindow : Window, IDisposable
             }
         }
 
-        using (M3Card.Begin("appearance_text", Loc.T("Text"), FontAwesomeIcon.Font))
+        using (M3Card.Begin("appearance_text", Loc.T("Size"), FontAwesomeIcon.Font))
         {
             // Fixed steps rather than a slider: every size is a separate font build with the full Hangul set.
             var selected = Array.FindIndex(TextScaleSteps, step => MathF.Abs(step - cfg.UiTextScale) < 0.01f);
@@ -1191,10 +1252,21 @@ public class MainWindow : Window, IDisposable
                 cfg.Save();
             }
 
-            // The previous size stays on screen until the new one has finished building.
-            if (FontManager.IsPending)
+            // The UI library applies these between frames, not while a slider is held.
+            var elementPercent = (int)MathF.Round(cfg.UiElementScale * 100f);
+            if (SliderRow(Loc.T("Element size"), Loc.T("Size of buttons, switches and other controls."),
+                    ref elementPercent, 75, 150, "%"))
             {
-                StatusLine(FontAwesomeIcon.HourglassHalf, Loc.T("Preparing the new text size…"), Muted);
+                cfg.UiElementScale = elementPercent / 100f;
+                savePending = true;
+            }
+
+            var paddingPercent = (int)MathF.Round(cfg.UiPaddingScale * 100f);
+            if (SliderRow(Loc.T("Spacing"), Loc.T("Padding and gaps between controls, on top of the element size."),
+                    ref paddingPercent, 50, 200, "%"))
+            {
+                cfg.UiPaddingScale = paddingPercent / 100f;
+                savePending = true;
             }
         }
 
@@ -1263,7 +1335,7 @@ public class MainWindow : Window, IDisposable
             if (hovered)
             {
                 ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-                ImguiTooltips.ShowTooltip(Loc.T(name));
+                M3Tooltip.Show(Loc.T(name));
             }
 
             if (pressed)
@@ -1318,7 +1390,9 @@ public class MainWindow : Window, IDisposable
 
             ImGui.Dummy(new Vector2(0f, M3.Space2));
 
-            if (M3Widgets.Button("##about_kofi", Loc.T("Support on Ko-fi"), M3ButtonStyle.Tonal, FontAwesomeIcon.MugHot))
+            // Ko-fi goes to the upstream team (FFXIV-CombatReborn), not to this fork; the tooltip says so.
+            if (M3Widgets.Button("##about_kofi", Loc.T("Support the original developers on Ko-fi"), M3ButtonStyle.Tonal, FontAwesomeIcon.MugHot,
+                    tooltip: Loc.T("Goes to the original Passport Checker Reborn team (The Combat Reborn Team), not to the maintainer of this Custom version.")))
             {
                 OpenUrl(KofiUrl);
             }
@@ -1444,6 +1518,9 @@ public class MainWindow : Window, IDisposable
         var row = M3SettingRow.Begin(label, supporting, controlSize);
         ImGui.SetCursorScreenPos(row.ControlPosition);
         var changed = M3Widgets.SliderInt($"##{label}_slider", ref value, min, max, $"{value}{suffix}", trackWidth);
+
+        // Ctrl+click lets a value be typed in, which the slider doesn't clamp.
+        value = Math.Clamp(value, min, max);
         M3SettingRow.End(row);
         return changed;
     }
@@ -1512,7 +1589,7 @@ public class MainWindow : Window, IDisposable
             enabled: enabled);
 
         // Shown while disabled too, since the tooltip is what explains how to enable it.
-        ImguiTooltips.HoveredTooltip(tooltip);
+        M3Tooltip.Hovered(tooltip);
 
         M3SettingRow.End(row);
         return pressed && enabled;

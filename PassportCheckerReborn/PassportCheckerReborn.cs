@@ -8,7 +8,6 @@ using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using Lumina.Excel.Sheets;
 using PassportCheckerReborn.Services;
-using PassportCheckerReborn.UI;
 using PassportCheckerReborn.Windows;
 using System.Threading;
 using System.Threading.Tasks;
@@ -73,6 +72,11 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Loc.Language = Configuration.Language;  // early; re-applied after client detection below
 
+        // The UI library reads the accent color and the text/element/padding sizes from the configuration,
+        // and its own built-in strings go through our translation.
+        M3.Initialize(PluginInterface, Config);
+        M3Fork.Localize = Loc.T;
+
 
         TomestoneService = new TomestoneService(this);
         FFLogsService = new FFLogsService(this);
@@ -120,8 +124,8 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             // Register framework update for party list monitoring
             Framework.Update += PartyListMonitorService.OnFrameworkUpdate;
 
-            // Fonts first, so every window this frame draws with the same text size.
-            PluginInterface.UiBuilder.Draw += M3.UpdateFonts;
+            // Before the windows, so every window this frame draws with the same sizes.
+            PluginInterface.UiBuilder.Draw += BeginUiFrame;
             PluginInterface.UiBuilder.Draw += ManageWindowStates;
             PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
@@ -142,7 +146,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
             // Unregister framework update for party list monitoring
             Framework.Update -= PartyListMonitorService.OnFrameworkUpdate;
 
-            PluginInterface.UiBuilder.Draw -= M3.UpdateFonts;
+            PluginInterface.UiBuilder.Draw -= BeginUiFrame;
             PluginInterface.UiBuilder.Draw -= ManageWindowStates;
             PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
             PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
@@ -160,7 +164,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
 
             // On the framework thread, where its detour runs, so the hook isn't torn down mid-call.
             PFWindowManager.Dispose();
-            FontManager.DisposeAll();
+            M3.Dispose();
 
             CommandManager.RemoveHandler(CommandName);
             CommandManager.RemoveHandler(ALTCOMMAND);
@@ -177,7 +181,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
 
     private void OnCommand(string command, string args)
     {
-        MainWindow.Toggle();
+        ToggleMainUi();
     }
 
     private void OnPartyListCommand(string command, string args)
@@ -187,7 +191,17 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         ChatGui.Print($"[PassportChecker] {Loc.T(Configuration.ShowPartyListOverlay ? "Party List Overlay shown" : "Party List Overlay hidden")}.");
     }
 
-    public void ToggleMainUi() => MainWindow.Toggle();
+    public void ToggleMainUi()
+    {
+        // Folded into its bar, the window is restored rather than closed.
+        if (MainWindow is { IsOpen: true, IsMinimized: true })
+        {
+            MainWindow.Restore();
+            return;
+        }
+
+        MainWindow.Toggle();
+    }
     public void ToggleOverlay() => PFWindow.Toggle();
 
     /// <summary>
@@ -269,6 +283,21 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
         }
 
         return false;
+    }
+
+    private bool uiFontsPreloaded;
+
+    /// <summary>Runs every frame before the windows: lets the UI library pick up size changes.</summary>
+    private void BeginUiFrame()
+    {
+        M3.BeginFrame();
+
+        // Hangul fonts take seconds to build; start them on the first frame so they're ready before a window opens.
+        if (!uiFontsPreloaded)
+        {
+            uiFontsPreloaded = true;
+            M3Fork.PreloadFonts();
+        }
     }
 
     /// <summary>

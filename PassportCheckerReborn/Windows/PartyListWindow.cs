@@ -4,7 +4,6 @@ using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 using PassportCheckerReborn.Services;
-using PassportCheckerReborn.UI;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -67,7 +66,7 @@ public class PartyListWindow(PassportCheckerReborn plugin) : Window("Party Membe
 
     public override unsafe void PreDraw()
     {
-        theme = M3Style.Push(compact: true);
+        theme = M3Style.Push(M3Density.Compact);
 
         var position = plugin.Configuration.PartyListOverlayPosition;
 

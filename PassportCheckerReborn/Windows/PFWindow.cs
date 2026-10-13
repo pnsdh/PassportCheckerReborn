@@ -2,7 +2,6 @@ using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using PassportCheckerReborn.Services;
-using PassportCheckerReborn.UI;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -62,7 +61,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
 
     public override unsafe void PreDraw()
     {
-        theme = M3Style.Push(compact: true);
+        theme = M3Style.Push(M3Density.Compact);
 
         // Position this window to the left or right of the PF Details addon.
         //
@@ -268,7 +267,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 _ = FetchTomestoneForAsync(tsToFetch);
             }
 
-            ImguiTooltips.HoveredTooltip(!hasKey
+            M3Tooltip.Hovered(!hasKey
                 ? Loc.T("Configure your Tomestone API key in Settings → Tomestone.")
                 : isResolving ? Loc.T("Waiting for player names to be resolved…")
                 : tomestoneBatchInProgress ? Loc.T("Looking up Tomestone data for all players…")
@@ -295,7 +294,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
                 _ = FetchFFLogsForAsync(ffToFetch);
             }
 
-            ImguiTooltips.HoveredTooltip(!hasCredentials
+            M3Tooltip.Hovered(!hasCredentials
                 ? Loc.T("Configure your FFLogs credentials in Settings → FFLogs.")
                 : isResolving ? Loc.T("Waiting for player names to be resolved…")
                 : fflogsBatchInProgress ? Loc.T("Looking up FFLogs data for all players…")
@@ -382,7 +381,7 @@ public class PFWindow(PassportCheckerReborn plugin) : Window("PF Member Info##PF
             ImGui.TextColored(knownColor ?? (member.IsPrivate ? OverlayWidgets.Muted : M3.Scheme.OnSurface), displayName);
             if (known != KnownPlayerSource.None && ImGui.IsItemHovered())
             {
-                ImguiTooltips.ShowTooltip(KnownSourcesText(known));
+                M3Tooltip.Show(KnownSourcesText(known));
             }
         }
 

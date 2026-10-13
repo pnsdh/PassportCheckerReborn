@@ -85,14 +85,18 @@ UI 언어(English/한국어), 플러그인 창의 글자 크기와 강조 색상
 
 [Dalamud .NET SDK](https://github.com/goatcorp/Dalamud) v15와 .NET 10이 필요합니다.
 
+UI는 [RebornMaterial의 한글 대응 포크](https://github.com/pnsdh/RebornMaterial)를 git 서브모듈(`lib/RebornMaterial`)로 사용합니다.
+
 ```bash
+git clone --recursive https://github.com/pnsdh/PassportCheckerReborn.git
+# 이미 받았다면: git submodule update --init
 dotnet restore
 dotnet build
 ```
 
 ## 문의
 
-https://discord.gg/AjVHyDNjUd
+https://discord.gg/R75tq68bA9
 
 ## 라이선스
 
