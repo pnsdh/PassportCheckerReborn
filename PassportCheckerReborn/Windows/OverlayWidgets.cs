@@ -246,6 +246,10 @@ internal static class OverlayWidgets
             {
                 NotOnFFLogs();
             }
+            else if (result?.RankingsHidden == true)
+            {
+                RankingsHidden();
+            }
             else
             {
                 NoLogs(result);
@@ -420,6 +424,16 @@ internal static class OverlayWidgets
         if (ImGui.IsItemHovered())
         {
             M3Tooltip.Show(Loc.T("FFLogs has no character with this name on this server. They may never have uploaded a log, or renamed or changed servers recently."));
+        }
+    }
+
+    /// <summary>A muted "Logs hidden" marker for a character whose FFLogs rankings are private.</summary>
+    private static void RankingsHidden()
+    {
+        MutedText(Loc.T("Logs hidden"));
+        if (ImGui.IsItemHovered())
+        {
+            M3Tooltip.Show(Loc.T("This character has made their FFLogs rankings private, so clears can't be shown."));
         }
     }
 

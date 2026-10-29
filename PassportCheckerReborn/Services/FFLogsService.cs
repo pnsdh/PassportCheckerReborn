@@ -705,6 +705,14 @@ public sealed class FFLogsService : IDisposable
                 continue;
             }
 
+            if (batch.Hidden.Contains(i))
+            {
+                // Known answer (cached): whether they cleared can't be told, and wipes read from their reports
+                // would pass a clear off as progression, so no progression read either.
+                Publish(i, NoDataResult() with { RankingsHidden = true });
+                continue;
+            }
+
             if (!batch.Queried.Contains(i))
             {
                 // The world couldn't be mapped to an FFLogs server.
@@ -843,13 +851,14 @@ public sealed class FFLogsService : IDisposable
 
     /// <summary>
     /// What one rankings batch returned: memberIndex → (encounterId → rank data), which members were actually
-    /// queried (their world maps to an FFLogs server), which ones FFLogs has no character for, and which ones
-    /// hit a transient per-member error (retryable).
+    /// queried (their world maps to an FFLogs server), which ones FFLogs has no character for, which ones have
+    /// hidden their rankings, and which ones hit a transient per-member error (retryable).
     /// </summary>
     private sealed record RankingsBatch(
         Dictionary<int, Dictionary<int, EncounterRankData>> Data,
         HashSet<int> Queried,
         HashSet<int> NotFound,
+        HashSet<int> Hidden,
         HashSet<int> Failed);
 
     /// <summary>
@@ -862,7 +871,7 @@ public sealed class FFLogsService : IDisposable
         IReadOnlyList<(string Name, string World, string JobAbbreviation)> members,
         IReadOnlyList<int> encounterIds)
     {
-        var batch = new RankingsBatch([], [], [], []);
+        var batch = new RankingsBatch([], [], [], [], []);
         if (encounterIds.Count == 0)
         {
             return batch;
@@ -942,12 +951,25 @@ public sealed class FFLogsService : IDisposable
 
                 var currentJobSpec = GetSpecForJob(members[i].JobAbbreviation);
                 var perEncounter = new Dictionary<int, EncounterRankData>();
+                var hidden = false;
                 foreach (var encId in encounterIds)
                 {
                     if (charEl.TryGetProperty($"e{encId}", out var rankingsEl) && rankingsEl.ValueKind != JsonValueKind.Null)
                     {
+                        if (IsRankingsHidden(rankingsEl))
+                        {
+                            hidden = true;
+                            break;
+                        }
+
                         perEncounter[encId] = ParseEncounterRank(rankingsEl, currentJobSpec);
                     }
+                }
+
+                if (hidden)
+                {
+                    batch.Hidden.Add(i);
+                    continue;
                 }
 
                 if (perEncounter.Count > 0)
@@ -972,6 +994,18 @@ public sealed class FFLogsService : IDisposable
 
         return batch;
     }
+
+    /// <summary>
+    /// Whether an encounterRankings blob is FFLogs' refusal for a character whose rankings are private. It
+    /// comes inside the JSON scalar as <c>{"error": "You do not have permission to see this character's
+    /// rankings."}</c>, not as a GraphQL error, so it would otherwise parse as zero kills.
+    /// </summary>
+    private static bool IsRankingsHidden(JsonElement rankingsEl)
+        => rankingsEl.ValueKind == JsonValueKind.Object
+           && rankingsEl.TryGetProperty("error", out var errEl)
+           && errEl.ValueKind == JsonValueKind.String
+           && errEl.GetString() is { } message
+           && message.Contains("permission", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Extracts kills + best/current-job parse from one encounterRankings JSON blob.</summary>
     private static EncounterRankData ParseEncounterRank(JsonElement rankingsEl, string? currentJobSpec)
@@ -1923,6 +1957,12 @@ public record EncounterParseResult(
     /// this duty (only the current Savage tier and Ultimate). "No logs" then means "no clear", not "never tried".
     /// </summary>
     public bool ProgressionNotTracked { get; init; }
+
+    /// <summary>
+    /// True when the character has made their FFLogs rankings private, so whether they cleared is unknown.
+    /// A real answer, so it is cached.
+    /// </summary>
+    public bool RankingsHidden { get; init; }
 
     /// <summary>
     /// For a no-kill player, the phase (lastPhase) reached on their best progression pull, so the UI can

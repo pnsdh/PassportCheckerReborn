@@ -1427,6 +1427,7 @@ public partial class MainWindow : Window, IDisposable
             BadgeRow(Loc.T("Private"), s.OnSurfaceVariant, Loc.T("Adventure plate is hidden"));
             BadgeRow(Loc.T("Lookup failed"), s.Error, Loc.T("FFLogs request failed — refresh to retry"), asText: true);
             BadgeRow(Loc.T("Not on FFLogs"), OverlayWidgets.Muted, Loc.T("FFLogs has no character with this name on this server"), asText: true);
+            BadgeRow(Loc.T("Logs hidden"), OverlayWidgets.Muted, Loc.T("The character's FFLogs rankings are private"), asText: true);
         }
 
         using (M3Card.Begin("about_caches", Loc.T("Caches"), FontAwesomeIcon.Database))

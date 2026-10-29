@@ -354,6 +354,9 @@ public static class Loc
         ["FFLogs lookup failed (network or rate limit) — refresh to retry."] = "FFLogs 조회 실패 (네트워크 또는 요청 한도) — 새로고침하여 재시도.",
         ["No Logs"] = "기록 없음",
         ["No logs"] = "기록 없음",
+        ["Logs hidden"] = "로그 비공개",
+        ["The character's FFLogs rankings are private"] = "FFLogs 랭킹이 비공개로 설정됨",
+        ["This character has made their FFLogs rankings private, so clears can't be shown."] = "이 캐릭터는 FFLogs 랭킹을 비공개로 설정해 클리어 여부를 표시할 수 없습니다.",
         ["FFLogs doesn't record progression for this duty, so only clears are shown."] = "이 콘텐츠는 FFLogs가 진도를 기록하지 않아 클리어 여부만 표시합니다.",
         // FFLogs result formats ({0}=kills, {1}/{2}=parse%) — templates so word order localizes.
         ["Cleared {0}X"] = "{0}킬",
