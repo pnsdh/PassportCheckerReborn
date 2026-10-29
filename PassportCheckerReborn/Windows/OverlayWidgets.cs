@@ -248,7 +248,7 @@ internal static class OverlayWidgets
             }
             else
             {
-                MutedText(Loc.T("No logs"));
+                NoLogs(result);
             }
 
             return;
@@ -294,7 +294,20 @@ internal static class OverlayWidgets
         }
         else
         {
-            MutedText(Loc.T("No logs"));
+            NoLogs(result);
+        }
+    }
+
+    /// <summary>
+    /// A muted "No logs". Where FFLogs doesn't record progression for the duty, a tooltip says that only
+    /// clears are shown, so it isn't read as "never attempted".
+    /// </summary>
+    private static void NoLogs(EncounterParseResult? result)
+    {
+        MutedText(Loc.T("No logs"));
+        if (result?.ProgressionNotTracked == true && ImGui.IsItemHovered())
+        {
+            M3Tooltip.Show(Loc.T("FFLogs doesn't record progression for this duty, so only clears are shown."));
         }
     }
 

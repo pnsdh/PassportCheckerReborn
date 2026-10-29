@@ -379,9 +379,16 @@ public sealed class FFLogsService : IDisposable
     /// who cleared in a previous expansion still shows as cleared. Only Ultimates need this; per-tier
     /// content (Savage/Extreme/Chaotic) is never re-listed, so leave it <c>null</c>.
     /// </param>
+    /// <param name="TracksProgression">
+    /// Whether FFLogs links wipe-only reports of this duty to the characters in them. It only does so for the
+    /// current Savage tier and the current Ultimate; for everything else a report with no kill never shows up
+    /// in <c>recentReports</c> (measured 2026-10: 0–1 of 2–39 wipe-only reports per zone linked, against all of
+    /// them for zones 73 and 76), so a progression read costs ~9x a rankings read and almost never finds
+    /// anything. Move this flag to the new content each tier.
+    /// </param>
     private readonly record struct DutyEntry(
         uint DutyId, string Name, int ZoneId, int PrimaryEncounterId, int? SecondaryEncounterId, int Difficulty,
-        int[]? HistoricalEncounterIds = null);
+        int[]? HistoricalEncounterIds = null, bool TracksProgression = false);
 
     /// <summary>
     /// Single source of truth for the FFLogs duty mapping — update this ONE list each content tier.
@@ -403,11 +410,11 @@ public sealed class FFLogsService : IDisposable
         new(1024, "AAC Cruiserweight M3 (Savage)",     68, 99,  null, DifficultyHigh),
         new(1026, "AAC Cruiserweight M4 (Savage)",     68, 100, null, DifficultyHigh),
 
-        // ── Savage — AAC Heavyweight (M4 is two phases) ──
-        new(1069, "AAC Heavyweight M1 (Savage)",       73, 101, null, DifficultyHigh),
-        new(1071, "AAC Heavyweight M2 (Savage)",       73, 102, null, DifficultyHigh),
-        new(1073, "AAC Heavyweight M3 (Savage)",       73, 103, null, DifficultyHigh),
-        new(1075, "AAC Heavyweight M4 (Savage)",       73, 104, 105,  DifficultyHigh),
+        // ── Savage — AAC Heavyweight (M4 is two phases) — current tier, so progression is read ──
+        new(1069, "AAC Heavyweight M1 (Savage)",       73, 101, null, DifficultyHigh, TracksProgression: true),
+        new(1071, "AAC Heavyweight M2 (Savage)",       73, 102, null, DifficultyHigh, TracksProgression: true),
+        new(1073, "AAC Heavyweight M3 (Savage)",       73, 103, null, DifficultyHigh, TracksProgression: true),
+        new(1075, "AAC Heavyweight M4 (Savage)",       73, 104, 105,  DifficultyHigh, TracksProgression: true),
 
         // ── Chaotic ──
         new(1010, "The Cloud of Darkness (Chaotic)",   66, 2061, null, DifficultyNormal),
@@ -439,7 +446,7 @@ public sealed class FFLogsService : IDisposable
         new(788,  "Dragonsong's Reprise (Ultimate)",         59, 1076, null, DifficultyNormal, [1065]),
         new(908,  "The Omega Protocol (Ultimate)",           59, 1077, null, DifficultyNormal, [1068]),
         new(1006, "Futures Rewritten (Ultimate)",            65, 1079, null, DifficultyNormal),
-        new(1094, "Dancing Mad (Ultimate)",                  76, 1085, null, DifficultyNormal),
+        new(1094, "Dancing Mad (Ultimate)",                  76, 1085, null, DifficultyNormal, TracksProgression: true),
     };
 
     private static readonly Dictionary<uint, DutyEntry> DutyById;
@@ -637,7 +644,7 @@ public sealed class FFLogsService : IDisposable
     /// P1 + P2 for a two-phase fight, plus for Ultimates the same fight's older-expansion listings (folded in).
     /// Characters FFLogs doesn't know come back as <see cref="EncounterParseResult.CharacterNotFound"/>.</item>
     /// <item>One progression request for the members without a clear, each reading their recent reports
-    /// once for every phase they haven't cleared.</item>
+    /// once for every phase they haven't cleared — only for duties that <see cref="DutyEntry.TracksProgression"/>.</item>
     /// </list>
     /// Clears/parses are published as soon as the rankings arrive; the rest once progression resolves.
     /// </summary>
@@ -727,6 +734,15 @@ public sealed class FFLogsService : IDisposable
             }
 
             phaseResults[i] = phases;
+
+            // FFLogs doesn't link this duty's wipe-only reports to characters (see TracksProgression), so there
+            // is no progression to find: publish what the rankings showed, marked so the UI can say why.
+            if (!entry.TracksProgression)
+            {
+                var combined = CombinePhases(phases);
+                Publish(i, combined.TotalKills > 0 ? combined : combined with { ProgressionNotTracked = true });
+                continue;
+            }
 
             // Progression is measured on the live listing of each phase without a clear (in any expansion).
             var uncleared = new List<int>();
@@ -1901,6 +1917,12 @@ public record EncounterParseResult(
     /// transferred since). Unlike <see cref="FetchFailed"/> this is a real answer, so it is cached.
     /// </summary>
     public bool CharacterNotFound { get; init; }
+
+    /// <summary>
+    /// True when the player has no clear and progression wasn't looked up because FFLogs doesn't record it for
+    /// this duty (only the current Savage tier and Ultimate). "No logs" then means "no clear", not "never tried".
+    /// </summary>
+    public bool ProgressionNotTracked { get; init; }
 
     /// <summary>
     /// For a no-kill player, the phase (lastPhase) reached on their best progression pull, so the UI can
