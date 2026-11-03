@@ -1002,6 +1002,9 @@ public partial class MainWindow : Window, IDisposable
 
     private void SaveAndTestFFLogsCredentials()
     {
+        // Pasted keys often carry a stray space or newline, which fails the token request.
+        fflogsClientIdInput = fflogsClientIdInput.Trim();
+        fflogsClientSecretInput = fflogsClientSecretInput.Trim();
         Configuration.FFLogsClientId = fflogsClientIdInput;
         Configuration.FFLogsClientSecret = fflogsClientSecretInput;
         Configuration.Save();
@@ -1097,6 +1100,7 @@ public partial class MainWindow : Window, IDisposable
             BeginActionRow();
             if (M3Widgets.Button("##tomestone_save", Loc.T("Save"), M3ButtonStyle.Filled, FontAwesomeIcon.Save))
             {
+                tomestoneApiKeyInput = tomestoneApiKeyInput.Trim();
                 cfg.TomestoneApiKey = tomestoneApiKeyInput;
                 cfg.Save();
             }

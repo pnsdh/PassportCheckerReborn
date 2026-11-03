@@ -12,6 +12,7 @@ using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
+using Lumina.Text.ReadOnly;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -972,11 +973,7 @@ public sealed class PartyFinderManager : IDisposable
         DetectCurrentDuty();
         RefreshMembers();
 
-        // Auto-show overlay when config enables it
-        if (plugin.Configuration.ShowMemberInfoOverlay)
-        {
-            plugin.PFWindow.IsOpen = true;
-        }
+        // The overlay opens itself from IsDetailOpen (ManageWindowStates).
     }
 
     private void OnPFDetailRefresh(AddonEvent type, AddonArgs args)
@@ -1017,7 +1014,6 @@ public sealed class PartyFinderManager : IDisposable
         resolveCts = null;
 
         IsDetailOpen = false;
-        plugin.PFWindow.IsOpen = false;
         ClearMembers();
         currentDetailedPost = null;
         CurrentDutyId = 0;
@@ -1154,11 +1150,12 @@ public sealed class PartyFinderManager : IDisposable
             if (addon->AtkValuesCount > 15)
             {
                 var atkValue = addon->AtkValues[15];
-                // ValueType 6 = String, 8 = AllocatedString
-                var typeId = (uint)atkValue.Type;
-                if ((typeId == 6 || typeId == 8) && atkValue.String.HasValue)
+                // The game can hand the name over as any string type, and as an SeString (with payloads such
+                // as colour), so read it as one and keep only the text.
+                if (atkValue.Type is AtkValueType.String or AtkValueType.ConstString or AtkValueType.ManagedString
+                    && atkValue.String.HasValue)
                 {
-                    CurrentDutyName = atkValue.String.ToString() ?? string.Empty;
+                    CurrentDutyName = new ReadOnlySeStringSpan(atkValue.String.AsSpan()).ExtractText();
                 }
             }
         }

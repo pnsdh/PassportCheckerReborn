@@ -60,7 +60,8 @@ public sealed class FFLogsService : IDisposable
     public FFLogsService(PassportCheckerReborn plugin)
     {
         this.plugin = plugin;
-        httpClient = new HttpClient
+        // Ask for compressed responses: progression replies (every fight of every recent report) are large.
+        httpClient = new HttpClient(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
         {
             // Cap a hung connection at 30s instead of the 100s default so a stalled request can't pin a
             // lookup task for over a minute.
@@ -1357,7 +1358,8 @@ public sealed class FFLogsService : IDisposable
                 var difficultyParam = GetDifficultyForEncounter(encId) == DifficultyHigh
                     ? $", difficulty: {DifficultyHigh}"
                     : string.Empty;
-                fightParts.Add($"f{encId}: fights(encounterID: {encId}{difficultyParam}) {{ kill fightPercentage bossPercentage lastPhase friendlyPlayers }}");
+                // killType: Wipes leaves kills out server-side; progression only reads wipes.
+                fightParts.Add($"f{encId}: fights(encounterID: {encId}{difficultyParam}, killType: Wipes) {{ kill fightPercentage bossPercentage lastPhase friendlyPlayers }}");
             }
 
             var (slug, region) = serverInfo.Value;

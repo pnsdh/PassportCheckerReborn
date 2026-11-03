@@ -33,7 +33,7 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
-    internal const string Version = "7.5.7.2";
+    internal const string Version = "7.5.7.3";
 
     /// <summary>
     /// Whether the game is the Korean client. Dalamud's <see cref="ClientLanguage"/> enum has no
@@ -308,6 +308,12 @@ public sealed class PassportCheckerReborn : IAsyncDalamudPlugin
     {
         // The job filter chip sits on the Party Finder list while the feature is on.
         PFListFilterWindow.IsOpen = Configuration.EnableOneClickJobFilter && PartyFinderManager.IsListOpen;
+
+        // The member info overlay sits beside the PF detail pane while the feature is on. Decided every frame so
+        // turning the setting on with a listing already open shows it at once, and anything that closed it
+        // (Esc, a stale state) can't keep it hidden. IsDetailOpen only goes false after the deferred teardown,
+        // so swapping listings doesn't flicker it.
+        PFWindow.IsOpen = Configuration.ShowMemberInfoOverlay && PartyFinderManager.IsDetailOpen;
 
         // PartyListWindow: open when config enabled, and at least one integration enabled
         if (!Configuration.ShowPartyListOverlay

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -163,7 +164,7 @@ public sealed partial class TomestoneService : IDisposable
     public TomestoneService(PassportCheckerReborn plugin)
     {
         this.plugin = plugin;
-        httpClient = new HttpClient
+        httpClient = new HttpClient(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
         {
             // Cap a hung connection at 30s instead of the 100s default.
             Timeout = TimeSpan.FromSeconds(30),
