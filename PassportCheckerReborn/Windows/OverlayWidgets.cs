@@ -2,8 +2,10 @@ using Dalamud.Interface.Textures;
 using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Utility;
+using ClassJob = Lumina.Excel.Sheets.ClassJob;
 using PassportCheckerReborn.Services;
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 
 namespace PassportCheckerReborn.Windows;
@@ -537,9 +539,27 @@ internal static class OverlayWidgets
             return null;
         }
 
-        var iconId = FFLogsService.GetJobIconIdForSpec(FFLogsService.GetSpecForJob(jobAbbreviation));
-        return iconId.HasValue ? GetIconTexture(iconId.Value) : null;
+        return ClassJobIconIds.Value.TryGetValue(jobAbbreviation, out var iconId) ? GetIconTexture(iconId) : null;
     }
+
+    // Job icon for every ClassJob abbreviation, not just the combat jobs FFLogs knows: Blue Mage, crafters,
+    // gatherers and base classes too. Members' abbreviations come from this same sheet (in the client language),
+    // so they map back to their row; the game's job icons are 62100 + the ClassJob row id.
+    private static readonly Lazy<Dictionary<string, uint>> ClassJobIconIds = new(() =>
+    {
+        var ids = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        var sheet = PassportCheckerReborn.DataManager.GetExcelSheet<ClassJob>();
+        foreach (var row in sheet)
+        {
+            var abbreviation = row.Abbreviation.ToString();
+            if (row.RowId > 0 && !string.IsNullOrWhiteSpace(abbreviation))
+            {
+                ids.TryAdd(abbreviation, 62100 + row.RowId);
+            }
+        }
+
+        return ids;
+    });
 
     private static IDalamudTextureWrap? GetIconTexture(uint iconId)
     {
