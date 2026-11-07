@@ -1274,90 +1274,36 @@ public partial class MainWindow : Window, IDisposable
             }
         }
 
+        using (M3Card.Begin("appearance_motion", Loc.T("Motion"), FontAwesomeIcon.Film))
+        {
+            var motionPercent = (int)MathF.Round(cfg.UiMotionScale * 100f);
+            if (SliderRow(Loc.T("Animation length"),
+                    Loc.T("Scales how long animations take in the plugin's windows, such as folding the window and opening cards. Set it to 0% to turn them off."),
+                    ref motionPercent, 0, 200, "%"))
+            {
+                cfg.UiMotionScale = motionPercent / 100f;
+                savePending = true;
+            }
+        }
+
         using (M3Card.Begin("appearance_theme", Loc.T("Theme"), FontAwesomeIcon.Palette,
                    subtitle: Loc.T("Every color in the plugin's windows is generated from one accent color.")))
         {
-            var swatch = 28f * scale;
-            var reset = M3Widgets.IconButtonSize;
-            var controlSize = new Vector2(swatch + M3.Space2 + reset, MathF.Max(swatch, reset));
+            // Presets plus a last swatch for any colour; the first preset is the default, so it doubles as reset.
+            var presets = new M3ColorChoice[AccentPresets.Length];
+            for (var i = 0; i < AccentPresets.Length; i++)
+            {
+                presets[i] = new(Loc.T(AccentPresets[i].Name), AccentPresets[i].Color);
+            }
 
-            var row = M3SettingRow.Begin(Loc.T("Accent color"), Loc.T("Very dark or grey colors fall back to the default."), controlSize);
-            var origin = row.ControlPosition;
-
-            ImGui.SetCursorScreenPos(origin + new Vector2(0f, (controlSize.Y - swatch) * 0.5f));
             var accent = cfg.UiAccentColor;
-            if (M3Widgets.ColorSwatch("##accent_color", ref accent))
+            if (M3Widgets.RowColorChoices(Loc.T("Accent color") + "###accent_color", ref accent, presets,
+                    Loc.T("Pick a preset, or the last swatch for your own color. Very dark or grey colors fall back to the default.")))
             {
                 cfg.UiAccentColor = accent with { W = 1f };
                 savePending = true;
             }
-
-            ImGui.SetCursorScreenPos(origin + new Vector2(swatch + M3.Space2, (controlSize.Y - reset) * 0.5f));
-            if (M3Widgets.IconButton("##accent_reset", FontAwesomeIcon.Undo, Loc.T("Reset to the default accent")))
-            {
-                cfg.UiAccentColor = M3.DefaultSeed;
-                cfg.Save();
-            }
-
-            M3SettingRow.End(row);
-
-            DrawAccentPresets();
         }
-    }
-
-    private void DrawAccentPresets()
-    {
-        var cfg = Configuration;
-        var s = M3.Scheme;
-        var scale = M3.Scale;
-        var diameter = 28f * scale;
-        var gap = M3.Space2;
-        var controlWidth = (AccentPresets.Length * diameter) + ((AccentPresets.Length - 1) * gap);
-
-        var row = M3SettingRow.Begin(Loc.T("Presets"), null, new Vector2(controlWidth, diameter));
-        var origin = row.ControlPosition;
-        var drawList = ImGui.GetWindowDrawList();
-
-        for (var i = 0; i < AccentPresets.Length; i++)
-        {
-            var (name, color) = AccentPresets[i];
-            ImGui.SetCursorScreenPos(origin + new Vector2(i * (diameter + gap), 0f));
-            var pressed = ImGui.InvisibleButton($"##accent_preset_{i}", new Vector2(diameter));
-            var hovered = ImGui.IsItemHovered();
-            var center = (ImGui.GetItemRectMin() + ImGui.GetItemRectMax()) * 0.5f;
-
-            drawList.AddCircleFilled(center, diameter * 0.5f, M3.U32(color), 32);
-            if (IsSameColor(cfg.UiAccentColor, color))
-            {
-                drawList.AddCircle(center, (diameter * 0.5f) + (3f * scale), M3.U32(s.OnSurface), 32, 2f * scale);
-            }
-            else if (hovered)
-            {
-                drawList.AddCircle(center, (diameter * 0.5f) + (2f * scale), M3.U32(s.Outline), 32, 1.5f * scale);
-            }
-
-            if (hovered)
-            {
-                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-                M3Tooltip.Show(Loc.T(name));
-            }
-
-            if (pressed)
-            {
-                cfg.UiAccentColor = color;
-                cfg.Save();
-            }
-        }
-
-        M3SettingRow.End(row);
-    }
-
-    private static bool IsSameColor(Vector4 a, Vector4 b)
-    {
-        const float tolerance = 0.002f;
-        return MathF.Abs(a.X - b.X) < tolerance
-            && MathF.Abs(a.Y - b.Y) < tolerance
-            && MathF.Abs(a.Z - b.Z) < tolerance;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

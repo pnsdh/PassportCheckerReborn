@@ -66,6 +66,8 @@ public static class Loc
         ["Reset"] = "초기화",
         ["Press a key"] = "키를 누르세요",
         ["None"] = "없음",
+        ["Pick any colour"] = "원하는 색 고르기",
+        ["Your own colour. Click to change it."] = "직접 고른 색입니다. 눌러서 바꿀 수 있습니다.",
 
         // ── General page ─────────────────────────────────────────────────────
         ["Listing details"] = "모집 상세",
@@ -263,9 +265,12 @@ public static class Loc
         ["Theme"] = "테마",
         ["Every color in the plugin's windows is generated from one accent color."] = "플러그인 창의 모든 색상은 하나의 강조 색상에서 만들어집니다.",
         ["Accent color"] = "강조 색상",
-        ["Very dark or grey colors fall back to the default."] = "너무 어둡거나 회색에 가까운 색은 기본값으로 대체됩니다.",
-        ["Reset to the default accent"] = "기본 강조 색상으로 되돌리기",
-        ["Presets"] = "프리셋",
+        ["Pick a preset, or the last swatch for your own color. Very dark or grey colors fall back to the default."]
+            = "프리셋을 고르거나, 마지막 칸에서 원하는 색을 직접 고르세요. 너무 어둡거나 회색에 가까운 색은 기본값으로 대체됩니다.",
+        ["Motion"] = "움직임",
+        ["Animation length"] = "애니메이션 길이",
+        ["Scales how long animations take in the plugin's windows, such as folding the window and opening cards. Set it to 0% to turn them off."]
+            = "창 접기, 카드 펼치기 같은 플러그인 창 애니메이션의 길이를 조절합니다. 0%로 두면 애니메이션이 꺼집니다.",
         ["Crimson (default)"] = "크림슨 (기본)",
         ["Sapphire"] = "사파이어",
         ["Teal"] = "청록",

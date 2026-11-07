@@ -146,6 +146,9 @@ public class Configuration : IPluginConfiguration, IM3Settings
     /// <summary>Padding and spacing, as a multiple on top of the element size.</summary>
     public float UiPaddingScale { get; set; } = 1f;
 
+    /// <summary>How long the UI's animations take, as a multiple (0 turns them off).</summary>
+    public float UiMotionScale { get; set; } = 1f;
+
     public void Save()
     {
         PassportCheckerReborn.PluginInterface.SavePluginConfig(this);
